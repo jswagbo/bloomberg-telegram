@@ -27,7 +27,7 @@ qdrant-client==1.7.0
 
 # ML & NLP
 sentence-transformers==3.0.1
-torch==2.1.2
+# torch installed separately in Dockerfile with CPU-only version
 transformers==4.44.0
 huggingface_hub>=0.24.0
 numpy==1.26.3

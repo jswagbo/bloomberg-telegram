@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (cache bust: 2026-01-14T19:23:00Z - bcrypt fix)
+# Copy application code (cache bust: 2026-01-14T19:26:00Z - bcrypt 4.0.1)
 COPY . .
 
 # Create sessions directory

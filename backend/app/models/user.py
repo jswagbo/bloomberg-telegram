@@ -3,9 +3,9 @@
 from typing import Optional, List
 from datetime import datetime
 
-from sqlalchemy import String, Boolean, DateTime, Integer
+from sqlalchemy import String, Boolean, DateTime, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 
 from app.core.database import Base
 from app.models.base import UUIDMixin, TimestampMixin
@@ -54,7 +54,7 @@ class TrackedToken(Base, UUIDMixin, TimestampMixin):
     
     __tablename__ = "tracked_tokens"
     
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(PGUUID(as_uuid=False), ForeignKey("users.id"), index=True, nullable=False)
     token_address: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     chain: Mapped[str] = mapped_column(String(20), nullable=False)
     
@@ -72,7 +72,7 @@ class UserAlert(Base, UUIDMixin, TimestampMixin):
     
     __tablename__ = "user_alerts"
     
-    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(PGUUID(as_uuid=False), ForeignKey("users.id"), index=True, nullable=False)
     
     # Alert details
     alert_type: Mapped[str] = mapped_column(String(50), nullable=False)  # mention, price, whale, cluster

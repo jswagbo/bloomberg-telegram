@@ -30,10 +30,14 @@ async def lifespan(app: FastAPI):
     logger.info("Connecting to Redis...")
     await redis_manager.connect()
     
-    # Initialize Qdrant
-    logger.info("Connecting to Qdrant...")
-    qdrant_manager.connect()
-    await qdrant_manager.init_collection()
+    # Initialize Qdrant (optional - for vector similarity features)
+    try:
+        logger.info("Connecting to Qdrant...")
+        qdrant_manager.connect()
+        await qdrant_manager.init_collection()
+        logger.info("Qdrant connected successfully")
+    except Exception as e:
+        logger.warning(f"Qdrant connection failed: {e}. Vector similarity features will be disabled.")
     
     logger.info("Startup complete!")
     
@@ -44,7 +48,10 @@ async def lifespan(app: FastAPI):
     
     await close_db()
     await redis_manager.disconnect()
-    qdrant_manager.close()
+    try:
+        qdrant_manager.close()
+    except Exception:
+        pass  # Qdrant was not connected
     
     logger.info("Shutdown complete!")
 

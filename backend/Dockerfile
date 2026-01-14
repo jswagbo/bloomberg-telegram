@@ -22,12 +22,10 @@ COPY . .
 # Create sessions directory
 RUN mkdir -p /app/sessions
 
-# Expose port (Railway uses PORT env var)
-EXPOSE ${PORT:-8000}
+# Expose default port
+EXPOSE 8000
 
-# Health check - Railway sets PORT env var
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+# Railway manages healthchecks - removed HEALTHCHECK directive
 
-# Use shell form to expand PORT environment variable
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Use exec form with sh -c to expand PORT env variable at runtime
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

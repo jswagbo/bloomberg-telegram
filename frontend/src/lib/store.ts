@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 interface AppState {
   // Auth
@@ -28,11 +28,15 @@ export const useStore = create<AppState>()(
       token: null,
       user: null,
       setAuth: (token, user) => {
-        localStorage.setItem("auth_token", token);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("auth_token", token);
+        }
         set({ token, user });
       },
       logout: () => {
-        localStorage.removeItem("auth_token");
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("auth_token");
+        }
         set({ token: null, user: null });
       },
 
@@ -50,11 +54,23 @@ export const useStore = create<AppState>()(
     }),
     {
       name: "bloomberg-telegram-store",
+      storage: createJSONStorage(() => {
+        if (typeof window !== "undefined") {
+          return localStorage;
+        }
+        // Return a noop storage for SSR
+        return {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+        };
+      }),
       partialize: (state) => ({
         chain: state.chain,
         minScore: state.minScore,
         minSources: state.minSources,
       }),
+      skipHydration: true,
     }
   )
 );

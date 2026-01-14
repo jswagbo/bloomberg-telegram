@@ -27,5 +27,5 @@ EXPOSE 8000
 
 # Railway manages healthchecks - removed HEALTHCHECK directive
 
-# Use exec form with sh -c to expand PORT env variable at runtime
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Hardcode port 8000 - Railway's $PORT expansion has issues with exec form
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

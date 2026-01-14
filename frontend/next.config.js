@@ -4,16 +4,8 @@ const nextConfig = {
   images: {
     domains: ['dd.dexscreener.com', 'raw.githubusercontent.com'],
   },
-  async rewrites() {
-    // Use API_URL for server-side rewrite (not NEXT_PUBLIC_ which is client-only)
-    const apiUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    return [
-      {
-        source: '/api/:path*',
-        destination: `${apiUrl}/api/:path*`,
-      },
-    ];
-  },
+  // API requests are now handled by the /api/v1/[[...path]]/route.ts API route
+  // which reads API_URL at runtime (not build time), ensuring proper proxy behavior
 };
 
 module.exports = nextConfig;

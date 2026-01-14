@@ -50,7 +50,7 @@ class Wallet(Base, UUIDMixin, TimestampMixin):
     linked_wallets: Mapped[List[str]] = mapped_column(JSONB, default=list)
     
     # Metadata
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     __table_args__ = (
         Index("idx_wallets_address_chain", "address", "chain", unique=True),
@@ -88,7 +88,7 @@ class WalletActivity(Base, UUIDMixin):
     source_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     
     # Metadata
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     __table_args__ = (
         Index("idx_wallet_activity_wallet_timestamp", "wallet_id", "timestamp"),

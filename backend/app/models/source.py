@@ -63,7 +63,7 @@ class SourceReputation(Base, UUIDMixin, TimestampMixin):
     primary_chains: Mapped[List[str]] = mapped_column(JSONB, default=list)
     
     # Metadata
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
 
 class SourceCall(Base, UUIDMixin):

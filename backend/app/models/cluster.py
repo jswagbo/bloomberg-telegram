@@ -75,7 +75,7 @@ class SignalCluster(Base, UUIDMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="active")  # active, cooling, closed
     
     # Metadata
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     __table_args__ = (
         Index("idx_clusters_token_chain", "token_address", "chain"),
@@ -130,7 +130,7 @@ class ClusterEvent(Base, UUIDMixin):
     value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Metadata
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     __table_args__ = (
         Index("idx_cluster_events_cluster_timestamp", "cluster_id", "timestamp"),

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import String, Boolean, DateTime, Integer, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 
 from app.core.database import Base
 from app.models.base import UUIDMixin, TimestampMixin
@@ -16,7 +16,7 @@ class TelegramAccount(Base, UUIDMixin, TimestampMixin):
     
     __tablename__ = "telegram_accounts"
     
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(PGUUID(as_uuid=False), ForeignKey("users.id"), index=True, nullable=False)
     
     # Credentials (encrypted)
     api_id_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
@@ -49,7 +49,7 @@ class TelegramSource(Base, UUIDMixin, TimestampMixin):
     
     __tablename__ = "telegram_sources"
     
-    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("telegram_accounts.id"), index=True, nullable=False)
+    account_id: Mapped[str] = mapped_column(PGUUID(as_uuid=False), ForeignKey("telegram_accounts.id"), index=True, nullable=False)
     
     # Source identification
     telegram_id: Mapped[str] = mapped_column(String(50), index=True, nullable=False)  # Telegram's internal ID

@@ -9,14 +9,15 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch first (much smaller than GPU version)
-RUN pip install --no-cache-dir torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
+# ML features disabled - torch/sentence-transformers removed to reduce memory usage
+# To re-enable: uncomment torch install and ML dependencies in requirements.txt
+# RUN pip install --no-cache-dir torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
 
-# Install other Python dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (cache bust: 2026-01-14T18:52:00Z)
+# Copy application code (cache bust: 2026-01-14T18:58:00Z - ML disabled)
 COPY . .
 
 # Create sessions directory

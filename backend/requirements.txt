@@ -26,13 +26,12 @@ cryptg==0.4.0
 # Vector Database
 qdrant-client==1.7.0
 
-# ML & NLP
-sentence-transformers==3.0.1
-# torch installed separately in Dockerfile with CPU-only version
-transformers==4.44.0
-huggingface_hub>=0.24.0
-numpy==1.26.3
-scikit-learn==1.4.0
+# ML & NLP (DISABLED - uncomment to enable embeddings, requires more memory)
+# sentence-transformers==3.0.1
+# transformers==4.44.0
+# huggingface_hub>=0.24.0
+# scikit-learn==1.4.0
+numpy==1.26.3  # Keep numpy for basic array operations
 
 # HTTP Clients
 httpx==0.26.0

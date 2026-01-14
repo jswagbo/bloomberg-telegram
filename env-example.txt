@@ -1,0 +1,23 @@
+# Bloomberg Telegram - Environment Configuration
+# Copy this file to .env and update the values
+
+# Database
+POSTGRES_USER=bloomberg
+POSTGRES_PASSWORD=telegram_secret
+POSTGRES_DB=bloomberg_telegram
+
+# Security (CHANGE THESE IN PRODUCTION!)
+SECRET_KEY=your-secret-key-change-in-production-min-32-chars
+ENCRYPTION_KEY=your-encryption-key-exactly-32bytes!
+
+# Backend
+DATABASE_URL=postgresql://bloomberg:telegram_secret@postgres:5432/bloomberg_telegram
+REDIS_URL=redis://redis:6379
+
+# Qdrant Vector Database
+QDRANT_HOST=qdrant
+QDRANT_PORT=6333
+
+# Frontend
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000

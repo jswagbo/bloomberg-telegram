@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 4%;
+    --foreground: 240 10% 90%;
+    --card: 240 10% 7%;
+    --card-foreground: 240 10% 90%;
+    --popover: 240 10% 7%;
+    --popover-foreground: 240 10% 90%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4% 16%;
+    --secondary-foreground: 240 10% 90%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 55%;
+    --accent: 240 4% 16%;
+    --accent-foreground: 240 10% 90%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 4% 16%;
+    --input: 240 4% 16%;
+    --ring: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-terminal-bg text-terminal-text;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #12121a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2e2e3e;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3e3e4e;
+}
+
+/* Signal card glow effect */
+.signal-card-glow {
+  box-shadow: 0 0 20px rgba(14, 165, 233, 0.1);
+}
+
+.signal-card-glow:hover {
+  box-shadow: 0 0 30px rgba(14, 165, 233, 0.2);
+}
+
+/* Fire animation for high-score signals */
+@keyframes fire-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px #f97316);
+  }
+  50% {
+    filter: drop-shadow(0 0 8px #f97316);
+  }
+}
+
+.fire-icon {
+  animation: fire-pulse 1.5s ease-in-out infinite;
+}
+
+/* Skeleton loading */
+.skeleton {
+  @apply animate-pulse bg-terminal-border rounded;
+}

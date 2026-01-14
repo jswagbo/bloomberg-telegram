@@ -26,9 +26,10 @@ cryptg==0.4.0
 qdrant-client==1.7.0
 
 # ML & NLP
-sentence-transformers==2.2.2
+sentence-transformers==3.0.1
 torch==2.1.2
-transformers==4.36.2
+transformers==4.44.0
+huggingface_hub>=0.24.0
 numpy==1.26.3
 scikit-learn==1.4.0
 

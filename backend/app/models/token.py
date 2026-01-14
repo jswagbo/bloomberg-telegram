@@ -51,7 +51,7 @@ class Token(Base, UUIDMixin, TimestampMixin):
     is_honeypot: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # Extra data
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     
     # Unique constraint
     __table_args__ = (

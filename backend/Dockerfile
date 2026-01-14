@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir torch==2.1.2 --index-url https://download.pytorch
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code (cache bust: 2026-01-14T18:22:00Z)
+# Copy application code (cache bust: 2026-01-14T18:30:00Z)
 COPY . .
 
 # Create sessions directory

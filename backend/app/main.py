@@ -6,12 +6,58 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import structlog
 import time
+import sys
+import traceback
 
-from app.core.config import settings
-from app.core.database import init_db, close_db
-from app.core.redis import redis_manager
-from app.core.qdrant import qdrant_manager
-from app.api import api_router
+# Early logging setup
+print("[DEBUG] main.py: Starting imports...", flush=True)
+
+try:
+    print("[DEBUG] main.py: Importing config...", flush=True)
+    from app.core.config import settings
+    print(f"[DEBUG] main.py: Config loaded, app_version={settings.app_version}", flush=True)
+except Exception as e:
+    print(f"[ERROR] main.py: Failed to import config: {e}", flush=True)
+    traceback.print_exc()
+    raise
+
+try:
+    print("[DEBUG] main.py: Importing database...", flush=True)
+    from app.core.database import init_db, close_db
+    print("[DEBUG] main.py: Database module imported", flush=True)
+except Exception as e:
+    print(f"[ERROR] main.py: Failed to import database: {e}", flush=True)
+    traceback.print_exc()
+    raise
+
+try:
+    print("[DEBUG] main.py: Importing redis...", flush=True)
+    from app.core.redis import redis_manager
+    print("[DEBUG] main.py: Redis module imported", flush=True)
+except Exception as e:
+    print(f"[ERROR] main.py: Failed to import redis: {e}", flush=True)
+    traceback.print_exc()
+    raise
+
+try:
+    print("[DEBUG] main.py: Importing qdrant...", flush=True)
+    from app.core.qdrant import qdrant_manager
+    print("[DEBUG] main.py: Qdrant module imported", flush=True)
+except Exception as e:
+    print(f"[ERROR] main.py: Failed to import qdrant: {e}", flush=True)
+    traceback.print_exc()
+    raise
+
+try:
+    print("[DEBUG] main.py: Importing api_router...", flush=True)
+    from app.api import api_router
+    print("[DEBUG] main.py: API router imported", flush=True)
+except Exception as e:
+    print(f"[ERROR] main.py: Failed to import api_router: {e}", flush=True)
+    traceback.print_exc()
+    raise
+
+print("[DEBUG] main.py: All imports complete!", flush=True)
 
 logger = structlog.get_logger()
 
@@ -20,30 +66,50 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
+    print("[DEBUG] lifespan: Starting startup sequence...", flush=True)
     logger.info("Starting Bloomberg Telegram Signal Intelligence Engine")
     
     # Initialize database
-    logger.info("Initializing database...")
-    await init_db()
+    try:
+        print("[DEBUG] lifespan: Initializing database...", flush=True)
+        logger.info("Initializing database...")
+        await init_db()
+        print("[DEBUG] lifespan: Database initialized successfully", flush=True)
+    except Exception as e:
+        print(f"[ERROR] lifespan: Database init failed: {e}", flush=True)
+        traceback.print_exc()
+        raise
     
     # Initialize Redis
-    logger.info("Connecting to Redis...")
-    await redis_manager.connect()
+    try:
+        print("[DEBUG] lifespan: Connecting to Redis...", flush=True)
+        logger.info("Connecting to Redis...")
+        await redis_manager.connect()
+        print("[DEBUG] lifespan: Redis connected successfully", flush=True)
+    except Exception as e:
+        print(f"[ERROR] lifespan: Redis connection failed: {e}", flush=True)
+        traceback.print_exc()
+        raise
     
     # Initialize Qdrant (optional - for vector similarity features)
     try:
+        print("[DEBUG] lifespan: Connecting to Qdrant...", flush=True)
         logger.info("Connecting to Qdrant...")
         qdrant_manager.connect()
         await qdrant_manager.init_collection()
+        print("[DEBUG] lifespan: Qdrant connected successfully", flush=True)
         logger.info("Qdrant connected successfully")
     except Exception as e:
+        print(f"[DEBUG] lifespan: Qdrant connection failed (optional): {e}", flush=True)
         logger.warning(f"Qdrant connection failed: {e}. Vector similarity features will be disabled.")
     
+    print("[DEBUG] lifespan: Startup complete!", flush=True)
     logger.info("Startup complete!")
     
     yield
     
     # Shutdown
+    print("[DEBUG] lifespan: Starting shutdown sequence...", flush=True)
     logger.info("Shutting down...")
     
     await close_db()
@@ -53,6 +119,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Qdrant was not connected
     
+    print("[DEBUG] lifespan: Shutdown complete!", flush=True)
     logger.info("Shutdown complete!")
 
 
@@ -100,6 +167,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    print("[DEBUG] health_check: Received health check request", flush=True)
     return {
         "status": "healthy",
         "version": settings.app_version,

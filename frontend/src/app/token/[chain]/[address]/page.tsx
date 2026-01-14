@@ -35,7 +35,7 @@ export default function TokenDetailPage() {
     queryFn: async () => {
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/signals/token/${chain}/${address}`
+          `/api/v1/signals/token/${chain}/${address}`
         );
         if (response.ok) return response.json();
         return null;

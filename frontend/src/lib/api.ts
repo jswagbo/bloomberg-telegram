@@ -1,9 +1,9 @@
 import axios from "axios";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
+// Use relative path to go through Next.js rewrites in next.config.js
+// This ensures the API calls work in both dev and production
 const apiClient = axios.create({
-  baseURL: `${API_BASE_URL}/api/v1`,
+  baseURL: "/api/v1",
   headers: {
     "Content-Type": "application/json",
   },

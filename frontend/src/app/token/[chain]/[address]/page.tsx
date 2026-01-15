@@ -14,50 +14,52 @@ import {
   Wallet,
   Copy,
   Star,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle,
+  MessageSquare,
+  BarChart3,
+  Shield,
+  Zap,
+  Check
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn, formatPrice, formatNumber, truncateAddress, getDexScreenerUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
+import { useState } from "react";
 
 export default function TokenDetailPage() {
   const params = useParams();
   const chain = params.chain as string;
   const address = params.address as string;
+  const [copied, setCopied] = useState(false);
+
+  // Fetch comprehensive insights
+  const { data: insights, isLoading: insightsLoading } = useQuery({
+    queryKey: ["token-insights", chain, address],
+    queryFn: () => api.getTokenInsights(chain, address),
+  });
 
   const { data: tokenInfo, isLoading: infoLoading } = useQuery({
     queryKey: ["token-info", chain, address],
     queryFn: () => api.getTokenInfo(chain, address),
   });
 
-  const { data: cluster } = useQuery({
-    queryKey: ["token-cluster", chain, address],
-    queryFn: async () => {
-      try {
-        const response = await fetch(
-          `/api/v1/signals/token/${chain}/${address}`
-        );
-        if (response.ok) return response.json();
-        return null;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  const { data: whyMoving, refetch: refetchWhyMoving, isLoading: whyMovingLoading } = useQuery({
-    queryKey: ["why-moving", chain, address],
-    queryFn: () => api.getWhyMoving(chain, address),
-    enabled: false,
-  });
-
   const copyAddress = () => {
     navigator.clipboard.writeText(address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  if (infoLoading) {
+  if (insightsLoading || infoLoading) {
     return <TokenDetailSkeleton />;
   }
+
+  const priceData = insights?.price_data || tokenInfo || {};
+  const quantitative = insights?.quantitative || {};
+  const qualitative = insights?.qualitative || {};
+  const chatter = insights?.chatter || {};
+  const riskAssessment = insights?.risk_assessment || {};
 
   return (
     <div className="space-y-6">
@@ -72,19 +74,35 @@ export default function TokenDetailPage() {
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-full bg-primary-600/20 flex items-center justify-center text-2xl font-bold">
-              {tokenInfo?.symbol?.[0] || "?"}
+              {insights?.token?.symbol?.[0] || priceData?.symbol?.[0] || "?"}
             </div>
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-bold">${tokenInfo?.symbol || truncateAddress(address)}</h1>
+                <h1 className="text-2xl font-bold">
+                  ${insights?.token?.symbol || priceData?.symbol || truncateAddress(address)}
+                </h1>
                 <span className="px-2 py-1 rounded bg-purple-500/20 text-purple-400 text-sm">
                   {chain}
                 </span>
+                {riskAssessment.level && (
+                  <span className={cn(
+                    "px-2 py-1 rounded text-sm font-medium",
+                    riskAssessment.level === "high" ? "bg-bearish/20 text-bearish" :
+                    riskAssessment.level === "low" ? "bg-bullish/20 text-bullish" :
+                    "bg-yellow-500/20 text-yellow-400"
+                  )}>
+                    {riskAssessment.level === "high" ? "High Risk" :
+                     riskAssessment.level === "low" ? "Low Risk" : "Med Risk"}
+                  </span>
+                )}
               </div>
+              {insights?.token?.name && (
+                <div className="text-terminal-muted mt-1">{insights.token.name}</div>
+              )}
               <div className="flex items-center gap-2 mt-1 text-terminal-muted">
                 <span className="font-mono text-sm">{truncateAddress(address, 8)}</span>
                 <button onClick={copyAddress} className="hover:text-terminal-text transition-colors">
-                  <Copy className="w-4 h-4" />
+                  {copied ? <Check className="w-4 h-4 text-bullish" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
             </div>
@@ -95,7 +113,7 @@ export default function TokenDetailPage() {
               <Star className="w-5 h-5 text-terminal-muted" />
             </button>
             <a
-              href={getDexScreenerUrl(chain, address)}
+              href={priceData?.url || getDexScreenerUrl(chain, address)}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 px-4 py-2 bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
@@ -106,179 +124,380 @@ export default function TokenDetailPage() {
           </div>
         </div>
 
-        {/* Price */}
-        {tokenInfo && (
-          <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="text-terminal-muted text-sm mb-1">Price</div>
-              <div className="text-xl font-bold">${formatPrice(tokenInfo.price_usd || 0)}</div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="text-terminal-muted text-sm mb-1">24h Change</div>
-              <div className={cn(
-                "text-xl font-bold flex items-center gap-1",
-                (tokenInfo.price_change_24h || 0) >= 0 ? "text-bullish" : "text-bearish"
-              )}>
-                {(tokenInfo.price_change_24h || 0) >= 0 ? (
-                  <TrendingUp className="w-5 h-5" />
-                ) : (
-                  <TrendingDown className="w-5 h-5" />
-                )}
-                {(tokenInfo.price_change_24h || 0).toFixed(2)}%
-              </div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="text-terminal-muted text-sm mb-1">Market Cap</div>
-              <div className="text-xl font-bold">${formatNumber(tokenInfo.market_cap || 0)}</div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="text-terminal-muted text-sm mb-1">Liquidity</div>
-              <div className="text-xl font-bold">${formatNumber(tokenInfo.liquidity_usd || 0)}</div>
+        {/* Price Stats */}
+        <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-terminal-bg rounded-lg p-4">
+            <div className="text-terminal-muted text-sm mb-1">Price</div>
+            <div className="text-xl font-bold">${formatPrice(priceData.price_usd || 0)}</div>
+          </div>
+          <div className="bg-terminal-bg rounded-lg p-4">
+            <div className="text-terminal-muted text-sm mb-1">24h Change</div>
+            <div className={cn(
+              "text-xl font-bold flex items-center gap-1",
+              (priceData.price_change_24h || 0) >= 0 ? "text-bullish" : "text-bearish"
+            )}>
+              {(priceData.price_change_24h || 0) >= 0 ? (
+                <TrendingUp className="w-5 h-5" />
+              ) : (
+                <TrendingDown className="w-5 h-5" />
+              )}
+              {(priceData.price_change_24h || 0).toFixed(2)}%
             </div>
           </div>
-        )}
+          <div className="bg-terminal-bg rounded-lg p-4">
+            <div className="text-terminal-muted text-sm mb-1">Market Cap</div>
+            <div className="text-xl font-bold">
+              {priceData.market_cap ? `$${formatNumber(priceData.market_cap)}` : "N/A"}
+            </div>
+          </div>
+          <div className="bg-terminal-bg rounded-lg p-4">
+            <div className="text-terminal-muted text-sm mb-1">Liquidity</div>
+            <div className="text-xl font-bold">${formatNumber(priceData.liquidity_usd || 0)}</div>
+          </div>
+        </div>
       </div>
 
-      {/* Why Is This Moving */}
-      <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 text-fire" />
-            Why Is This Moving?
+      {/* Summary Card */}
+      {insights?.summary && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-primary-600/10 to-purple-600/10 border border-primary-600/30 rounded-xl p-6"
+        >
+          <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
+            <Zap className="w-5 h-5 text-primary-400" />
+            AI Summary
           </h2>
-          <button
-            onClick={() => refetchWhyMoving()}
-            disabled={whyMovingLoading}
-            className="px-4 py-2 bg-fire/20 text-fire rounded-lg hover:bg-fire/30 transition-colors disabled:opacity-50"
-          >
-            {whyMovingLoading ? "Analyzing..." : "Analyze"}
-          </button>
-        </div>
+          <p className="text-terminal-text leading-relaxed">{insights.summary}</p>
+        </motion.div>
+      )}
 
-        {whyMoving ? (
+      {/* Main Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Quantitative Metrics */}
+        <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
+          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <BarChart3 className="w-5 h-5 text-primary-400" />
+            Quantitative Metrics
+          </h2>
+          
           <div className="space-y-4">
-            {/* Summary */}
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <p className="text-sm">{whyMoving.summary}</p>
-              <div className="flex items-center gap-2 mt-2 text-xs text-terminal-muted">
-                <span>Confidence: {(whyMoving.confidence * 100).toFixed(0)}%</span>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
+                  <MessageSquare className="w-4 h-4" />
+                  Total Mentions
+                </div>
+                <div className="text-2xl font-bold">{quantitative.total_mentions || 0}</div>
+              </div>
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
+                  <Users className="w-4 h-4" />
+                  Unique Sources
+                </div>
+                <div className="text-2xl font-bold">{quantitative.unique_sources || 0}</div>
+              </div>
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
+                  <Wallet className="w-4 h-4 text-whale" />
+                  Wallets Mentioned
+                </div>
+                <div className="text-2xl font-bold">{quantitative.unique_wallets || 0}</div>
+              </div>
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
+                  <Zap className="w-4 h-4 text-fire" />
+                  Velocity
+                </div>
+                <div className="text-2xl font-bold">{(quantitative.velocity || 0).toFixed(1)}/min</div>
               </div>
             </div>
 
-            {/* Top Reasons */}
+            {quantitative.first_seen && (
+              <div className="flex items-center justify-between text-sm text-terminal-muted pt-2 border-t border-terminal-border">
+                <span>First seen: {formatDistanceToNow(new Date(quantitative.first_seen))} ago</span>
+                {quantitative.age_minutes && (
+                  <span>Active for {Math.round(quantitative.age_minutes)} min</span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Qualitative Analysis */}
+        <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
+          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <Shield className="w-5 h-5 text-primary-400" />
+            Qualitative Analysis
+          </h2>
+          
+          <div className="space-y-4">
+            {/* Sentiment Bar */}
             <div>
-              <h3 className="text-sm font-medium text-terminal-muted mb-2">Top Reasons</h3>
-              <div className="space-y-2">
-                {whyMoving.reasons.map((reason) => (
-                  <div key={reason.rank} className="flex items-center gap-2 text-sm">
-                    <span className="w-6 h-6 rounded-full bg-primary-600/20 flex items-center justify-center text-xs">
-                      {reason.rank}
-                    </span>
-                    <span>{reason.description}</span>
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span className={cn(
+                  "font-medium",
+                  qualitative.overall_sentiment === "bullish" ? "text-bullish" :
+                  qualitative.overall_sentiment === "bearish" ? "text-bearish" : "text-terminal-muted"
+                )}>
+                  {(qualitative.bullish_percent || 50).toFixed(0)}% Bullish
+                </span>
+                <span className="text-terminal-muted">
+                  {qualitative.bullish_count || 0} bullish · {qualitative.bearish_count || 0} bearish · {qualitative.neutral_count || 0} neutral
+                </span>
+              </div>
+              <div className="h-3 bg-terminal-border rounded-full overflow-hidden flex">
+                <div 
+                  className="bg-bullish h-full transition-all"
+                  style={{ width: `${qualitative.bullish_percent || 50}%` }}
+                />
+                <div 
+                  className="bg-bearish h-full transition-all"
+                  style={{ width: `${100 - (qualitative.bullish_percent || 50)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Risk & Quality Scores */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="text-terminal-muted text-sm mb-2">Risk Score</div>
+                <div className="flex items-center gap-3">
+                  <div className={cn(
+                    "text-2xl font-bold",
+                    (qualitative.risk_score || 0) > 60 ? "text-bearish" :
+                    (qualitative.risk_score || 0) > 30 ? "text-yellow-400" : "text-bullish"
+                  )}>
+                    {(qualitative.risk_score || 0).toFixed(0)}
+                  </div>
+                  <span className={cn(
+                    "px-2 py-1 rounded text-xs font-medium",
+                    qualitative.risk_level === "high" ? "bg-bearish/20 text-bearish" :
+                    qualitative.risk_level === "low" ? "bg-bullish/20 text-bullish" :
+                    "bg-yellow-500/20 text-yellow-400"
+                  )}>
+                    {qualitative.risk_level || "medium"}
+                  </span>
+                </div>
+              </div>
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <div className="text-terminal-muted text-sm mb-2">Quality Score</div>
+                <div className="flex items-center gap-3">
+                  <div className={cn(
+                    "text-2xl font-bold",
+                    (qualitative.quality_score || 0) > 70 ? "text-bullish" :
+                    (qualitative.quality_score || 0) > 40 ? "text-yellow-400" : "text-bearish"
+                  )}>
+                    {(qualitative.quality_score || 50).toFixed(0)}
+                  </div>
+                  <span className={cn(
+                    "px-2 py-1 rounded text-xs font-medium",
+                    qualitative.quality_level === "high" ? "bg-bullish/20 text-bullish" :
+                    qualitative.quality_level === "low" ? "bg-bearish/20 text-bearish" :
+                    "bg-yellow-500/20 text-yellow-400"
+                  )}>
+                    {qualitative.quality_level || "medium"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Risk Assessment */}
+      {riskAssessment.warnings?.length > 0 && (
+        <div className={cn(
+          "border rounded-xl p-6",
+          riskAssessment.level === "high" 
+            ? "bg-bearish/10 border-bearish/30" 
+            : "bg-yellow-500/10 border-yellow-500/30"
+        )}>
+          <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
+            <AlertTriangle className={cn(
+              "w-5 h-5",
+              riskAssessment.level === "high" ? "text-bearish" : "text-yellow-400"
+            )} />
+            Risk Warnings
+          </h2>
+          <ul className="space-y-2">
+            {riskAssessment.warnings.map((warning: string, i: number) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <AlertCircle className={cn(
+                  "w-4 h-4 mt-0.5 flex-shrink-0",
+                  riskAssessment.level === "high" ? "text-bearish" : "text-yellow-400"
+                )} />
+                {warning}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Chatter Summary */}
+      <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
+        <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+          <MessageSquare className="w-5 h-5 text-primary-400" />
+          Chatter Summary
+        </h2>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Key Quotes */}
+          <div>
+            <h3 className="text-sm font-medium text-terminal-muted mb-3">Key Quotes</h3>
+            {chatter.key_quotes?.length > 0 ? (
+              <div className="space-y-3">
+                {chatter.key_quotes.map((quote: any, i: number) => (
+                  <div 
+                    key={i}
+                    className={cn(
+                      "rounded-lg p-3 border-l-4",
+                      quote.type === "bullish" 
+                        ? "bg-bullish/10 border-bullish" 
+                        : "bg-bearish/10 border-bearish"
+                    )}
+                  >
+                    <p className="text-sm mb-2">"{quote.text}"</p>
+                    <div className="flex items-center justify-between text-xs text-terminal-muted">
+                      <span>{quote.source}</span>
+                      <span className={cn(
+                        quote.type === "bullish" ? "text-bullish" : "text-bearish"
+                      )}>
+                        {quote.highlight}
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
-            </div>
+            ) : (
+              <p className="text-terminal-muted text-sm">No significant quotes yet.</p>
+            )}
+          </div>
 
-            {/* Timeline */}
-            {whyMoving.timeline.length > 0 && (
+          {/* Themes & Factors */}
+          <div className="space-y-4">
+            {/* Themes */}
+            {chatter.themes?.length > 0 && (
               <div>
-                <h3 className="text-sm font-medium text-terminal-muted mb-2">Timeline</h3>
-                <div className="space-y-2">
-                  {whyMoving.timeline.slice(0, 10).map((event, i) => (
-                    <div key={i} className="flex items-start gap-3 text-sm">
-                      <div className="text-terminal-muted text-xs whitespace-nowrap">
-                        {formatDistanceToNow(new Date(event.timestamp))} ago
-                      </div>
-                      <div className="flex-1">
-                        <span className="text-primary-400">{event.type}:</span> {event.description}
-                        {event.source && (
-                          <span className="text-terminal-muted ml-1">({event.source})</span>
-                        )}
-                      </div>
-                    </div>
+                <h3 className="text-sm font-medium text-terminal-muted mb-2">Top Themes</h3>
+                <div className="flex flex-wrap gap-2">
+                  {chatter.themes.slice(0, 8).map((theme: any, i: number) => (
+                    <span 
+                      key={i}
+                      className="px-3 py-1 bg-terminal-bg rounded-full text-sm"
+                    >
+                      {theme.theme} <span className="text-terminal-muted">({theme.count})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Quality Factors */}
+            {chatter.quality_factors?.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-bullish mb-2 flex items-center gap-1">
+                  <CheckCircle className="w-4 h-4" />
+                  Positive Signals
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {chatter.quality_factors.map((factor: any, i: number) => (
+                    <span 
+                      key={i}
+                      className="px-2 py-1 bg-bullish/20 text-bullish rounded text-xs"
+                    >
+                      {factor.factor} ({factor.count})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Risk Factors */}
+            {chatter.risk_factors?.length > 0 && (
+              <div>
+                <h3 className="text-sm font-medium text-bearish mb-2 flex items-center gap-1">
+                  <AlertTriangle className="w-4 h-4" />
+                  Risk Signals
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {chatter.risk_factors.map((factor: any, i: number) => (
+                    <span 
+                      key={i}
+                      className="px-2 py-1 bg-bearish/20 text-bearish rounded text-xs"
+                    >
+                      {factor.factor} ({factor.count})
+                    </span>
                   ))}
                 </div>
               </div>
             )}
           </div>
-        ) : (
-          <p className="text-terminal-muted text-sm">
-            Click "Analyze" to see what's driving this token's price movement.
-          </p>
-        )}
-      </div>
+        </div>
 
-      {/* Signal Cluster */}
-      {cluster && (
-        <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
-          <h2 className="text-lg font-bold mb-4">Signal Intelligence</h2>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
-                <Users className="w-4 h-4" />
-                Sources
-              </div>
-              <div className="text-xl font-bold">{cluster.metrics?.unique_sources || 0}</div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
-                <TrendingUp className="w-4 h-4" />
-                Mentions
-              </div>
-              <div className="text-xl font-bold">{cluster.metrics?.total_mentions || 0}</div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
-                <Wallet className="w-4 h-4 text-whale" />
-                Wallets
-              </div>
-              <div className="text-xl font-bold">{cluster.metrics?.unique_wallets || 0}</div>
-            </div>
-            <div className="bg-terminal-bg rounded-lg p-4">
-              <div className="flex items-center gap-2 text-terminal-muted text-sm mb-1">
-                <Clock className="w-4 h-4" />
-                First Seen
-              </div>
-              <div className="text-sm font-medium">
-                {cluster.timing?.first_seen 
-                  ? formatDistanceToNow(new Date(cluster.timing.first_seen)) + " ago"
-                  : "N/A"}
-              </div>
-            </div>
-          </div>
-
-          {/* Sources */}
-          <div className="mb-4">
-            <h3 className="text-sm font-medium text-terminal-muted mb-2">Mentioned By</h3>
+        {/* Sources */}
+        {chatter.sources?.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-terminal-border">
+            <h3 className="text-sm font-medium text-terminal-muted mb-2">Mentioned In</h3>
             <div className="flex flex-wrap gap-2">
-              {cluster.sources?.map((source: string, i: number) => (
+              {chatter.sources.map((source: string, i: number) => (
                 <span key={i} className="px-3 py-1 bg-terminal-bg rounded-lg text-sm">
                   {source}
                 </span>
               ))}
             </div>
           </div>
+        )}
+      </div>
 
-          {/* Top Messages */}
-          {cluster.top_messages?.length > 0 && (
-            <div>
-              <h3 className="text-sm font-medium text-terminal-muted mb-2">Recent Signals</h3>
-              <div className="space-y-2">
-                {cluster.top_messages.slice(0, 5).map((msg: any, i: number) => (
-                  <div key={i} className="bg-terminal-bg rounded-lg p-3">
-                    <div className="flex items-center gap-2 text-xs text-terminal-muted mb-1">
-                      <span className="font-medium text-terminal-text">{msg.source_name}</span>
-                      <span>•</span>
-                      <span>{formatDistanceToNow(new Date(msg.timestamp))} ago</span>
+      {/* Bullish vs Bearish Messages */}
+      {(chatter.bullish_messages?.length > 0 || chatter.bearish_messages?.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Bullish Messages */}
+          <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-bullish">
+              <TrendingUp className="w-5 h-5" />
+              Bullish Chatter ({chatter.bullish_messages?.length || 0})
+            </h3>
+            {chatter.bullish_messages?.length > 0 ? (
+              <div className="space-y-3">
+                {chatter.bullish_messages.slice(0, 5).map((msg: any, i: number) => (
+                  <div key={i} className="bg-bullish/5 border border-bullish/20 rounded-lg p-3">
+                    <p className="text-sm mb-2">"{msg.text}"</p>
+                    <div className="flex items-center justify-between text-xs text-terminal-muted">
+                      <span>{msg.source}</span>
+                      <span className="text-bullish">Quality: {(msg.quality_score || 0).toFixed(0)}</span>
                     </div>
-                    <p className="text-sm line-clamp-2">{msg.original_text}</p>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="text-terminal-muted text-sm">No bullish messages found.</p>
+            )}
+          </div>
+
+          {/* Bearish Messages */}
+          <div className="bg-terminal-card border border-terminal-border rounded-xl p-6">
+            <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-bearish">
+              <TrendingDown className="w-5 h-5" />
+              Bearish Chatter ({chatter.bearish_messages?.length || 0})
+            </h3>
+            {chatter.bearish_messages?.length > 0 ? (
+              <div className="space-y-3">
+                {chatter.bearish_messages.slice(0, 5).map((msg: any, i: number) => (
+                  <div key={i} className="bg-bearish/5 border border-bearish/20 rounded-lg p-3">
+                    <p className="text-sm mb-2">"{msg.text}"</p>
+                    <div className="flex items-center justify-between text-xs text-terminal-muted">
+                      <span>{msg.source}</span>
+                      <span className="text-bearish">Risk: {(msg.risk_score || 0).toFixed(0)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-terminal-muted text-sm">No bearish messages found.</p>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -305,6 +524,10 @@ function TokenDetailSkeleton() {
             </div>
           ))}
         </div>
+      </div>
+      <div className="grid grid-cols-2 gap-6">
+        <div className="bg-terminal-card border border-terminal-border rounded-xl p-6 h-64" />
+        <div className="bg-terminal-card border border-terminal-border rounded-xl p-6 h-64" />
       </div>
     </div>
   );

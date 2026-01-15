@@ -123,24 +123,31 @@ def extract_tokens(text: str, default_chain: str = "solana") -> List[TokenMatch]
     tokens = []
     seen_addresses = set()
     seen_symbols = set()
+    symbol_positions = {}  # Track symbol positions for association
     
     # Detect chain from context
     detected_chain = detect_chain_from_context(text) or default_chain
     
-    # Extract $SYMBOL patterns
+    # First pass: collect all symbols and their positions
     for match in TOKEN_PATTERNS["symbol"].finditer(text):
         symbol = match.group(1).upper()
         if symbol not in seen_symbols:
             seen_symbols.add(symbol)
-            tokens.append(TokenMatch(
-                symbol=symbol,
-                address=None,
-                chain=detected_chain,
-                confidence=0.7,
-                match_type="symbol"
-            ))
+            symbol_positions[symbol] = match.start()
     
-    # Extract CA: prefix patterns
+    # Helper to find nearby symbol for an address
+    def find_nearby_symbol(address_pos: int, max_distance: int = 100) -> Optional[str]:
+        """Find a symbol that appears near this address position"""
+        closest_symbol = None
+        closest_distance = max_distance + 1
+        for symbol, pos in symbol_positions.items():
+            distance = abs(pos - address_pos)
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_symbol = symbol
+        return closest_symbol if closest_distance <= max_distance else None
+    
+    # Extract CA: prefix patterns with symbol association
     for match in TOKEN_PATTERNS["ca_prefix"].finditer(text):
         address = match.group(1)
         if address not in seen_addresses:
@@ -153,13 +160,20 @@ def extract_tokens(text: str, default_chain: str = "solana") -> List[TokenMatch]
             else:
                 chain = detected_chain
             
+            # Try to find associated symbol
+            nearby_symbol = find_nearby_symbol(match.start())
+            
             tokens.append(TokenMatch(
-                symbol=None,
+                symbol=nearby_symbol,
                 address=address,
                 chain=chain,
                 confidence=0.95,
                 match_type="address"
             ))
+            
+            # Remove used symbol from available pool
+            if nearby_symbol and nearby_symbol in symbol_positions:
+                del symbol_positions[nearby_symbol]
     
     # Extract pump.fun addresses
     for match in TOKEN_PATTERNS["pump_address"].finditer(text):

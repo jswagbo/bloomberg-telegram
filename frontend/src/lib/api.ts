@@ -264,6 +264,12 @@ export const api = {
     const response = await apiClient.post(`/telegram/accounts/${accountId}/ingest`, { limit });
     return response.data;
   },
+
+  // Token insights
+  getTokenInsights: async (chain: string, address: string) => {
+    const response = await apiClient.get(`/signals/insights/${chain}/${address}`);
+    return response.data;
+  },
 };
 
 export default api;

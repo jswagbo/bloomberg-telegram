@@ -1,8 +1,8 @@
 """Sentiment analysis for crypto messages"""
 
 import re
-from typing import Tuple, List
-from dataclasses import dataclass
+from typing import Tuple, List, Dict
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -19,6 +19,10 @@ class SentimentResult:
     score: float  # -1 to 1
     confidence: float  # 0 to 1
     signals: List[str]  # Matched signals
+    risk_score: float = 0.0  # 0-100, higher = more risky
+    quality_score: float = 50.0  # 0-100, higher = better quality alpha
+    risk_factors: List[str] = field(default_factory=list)
+    quality_factors: List[str] = field(default_factory=list)
 
 
 # Sentiment signals with weights
@@ -210,6 +214,123 @@ SPAM_PATTERNS = [
     re.compile(r'\bdm\s+(?:me|us)\b', re.IGNORECASE),
 ]
 
+# Risk signals - things that indicate the token is risky/speculative
+RISK_SIGNALS = {
+    # High risk - speculative language
+    "gamble": 25,
+    "gambling": 25,
+    "casino": 20,
+    "lottery": 20,
+    "risky": 20,
+    "high risk": 25,
+    "degen": 15,
+    "degen play": 20,
+    "yolo": 15,
+    "punt": 15,
+    "flip": 10,
+    "quick flip": 15,
+    
+    # Warning signs
+    "be careful": 20,
+    "careful": 15,
+    "nfa": 10,  # Not financial advice - often used with risky calls
+    "dyor": 10,  # Do your own research
+    "not financial advice": 10,
+    "proceed with caution": 20,
+    "at your own risk": 25,
+    
+    # Scam/rug indicators
+    "rug": 40,
+    "rugged": 45,
+    "scam": 40,
+    "honeypot": 45,
+    "dev sold": 40,
+    "dev dumped": 40,
+    "no audit": 25,
+    "unaudited": 20,
+    "anonymous": 15,
+    "anon dev": 20,
+    "no doxx": 15,
+    
+    # Negative fundamentals
+    "no utility": 20,
+    "meme only": 15,
+    "just vibes": 10,
+    "pure speculation": 25,
+    "no roadmap": 15,
+    "dead project": 30,
+    "abandoned": 30,
+    
+    # Price action warnings
+    "already pumped": 20,
+    "late entry": 15,
+    "top is in": 25,
+    "overbought": 15,
+    "overextended": 15,
+    "fading": 20,
+}
+
+# Quality signals - things that indicate good alpha/research
+QUALITY_SIGNALS = {
+    # High conviction language
+    "alpha": 15,
+    "conviction": 20,
+    "high conviction": 25,
+    "strong conviction": 25,
+    "thesis": 20,
+    "fundamental": 15,
+    "fundamentals": 15,
+    "solid": 10,
+    "legitimate": 15,
+    "legit": 10,
+    
+    # Research indicators
+    "researched": 15,
+    "due diligence": 20,
+    "dd": 10,
+    "analysis": 10,
+    "analyzed": 10,
+    "deep dive": 20,
+    "looked into": 10,
+    
+    # Team/project quality
+    "doxxed": 15,
+    "doxxed team": 20,
+    "audited": 20,
+    "audit": 15,
+    "verified": 15,
+    "kyc": 15,
+    "established": 15,
+    "experienced team": 20,
+    
+    # Value indicators
+    "undervalued": 20,
+    "underrated": 15,
+    "hidden gem": 20,
+    "under the radar": 15,
+    "early": 15,
+    "ground floor": 20,
+    "asymmetric": 20,
+    "asymmetric bet": 25,
+    "risk reward": 15,
+    "good r/r": 20,
+    
+    # Positive catalysts
+    "catalyst": 15,
+    "upcoming": 10,
+    "partnership": 15,
+    "listing": 15,
+    "cex listing": 20,
+    "binance": 20,
+    "coinbase": 20,
+    
+    # Social proof from quality
+    "smart money": 20,
+    "whales buying": 20,
+    "institutions": 15,
+    "vc backed": 20,
+}
+
 
 class SentimentAnalyzer:
     """Analyze sentiment of crypto messages"""
@@ -218,15 +339,21 @@ class SentimentAnalyzer:
         self.bullish_signals = BULLISH_SIGNALS
         self.bearish_signals = BEARISH_SIGNALS
         self.neutral_signals = NEUTRAL_SIGNALS
+        self.risk_signals = RISK_SIGNALS
+        self.quality_signals = QUALITY_SIGNALS
     
     def analyze(self, text: str) -> SentimentResult:
-        """Analyze sentiment of text"""
+        """Analyze sentiment of text with risk and quality assessment"""
         text_lower = text.lower()
         
         bullish_score = 0.0
         bearish_score = 0.0
         neutral_score = 0.0
+        risk_score = 0.0
+        quality_score = 0.0
         matched_signals = []
+        risk_factors = []
+        quality_factors = []
         
         # Check bullish signals
         for signal, weight in self.bullish_signals.items():
@@ -246,6 +373,18 @@ class SentimentAnalyzer:
                 neutral_score += weight
                 matched_signals.append(f"~{signal}")
         
+        # Check risk signals
+        for signal, weight in self.risk_signals.items():
+            if signal in text_lower:
+                risk_score += weight
+                risk_factors.append(signal)
+        
+        # Check quality signals
+        for signal, weight in self.quality_signals.items():
+            if signal in text_lower:
+                quality_score += weight
+                quality_factors.append(signal)
+        
         # Calculate final sentiment
         total_score = bullish_score + bearish_score + neutral_score
         
@@ -254,7 +393,11 @@ class SentimentAnalyzer:
                 sentiment=Sentiment.NEUTRAL,
                 score=0.0,
                 confidence=0.3,
-                signals=[]
+                signals=[],
+                risk_score=min(risk_score, 100),
+                quality_score=min(quality_score + 50, 100),  # Base 50
+                risk_factors=risk_factors[:5],
+                quality_factors=quality_factors[:5],
             )
         
         # Normalize score to -1 to 1
@@ -271,12 +414,41 @@ class SentimentAnalyzer:
         # Calculate confidence based on signal strength
         confidence = min(total_score / 2.0, 1.0)  # Cap at 1.0
         
+        # Cap risk and quality scores at 100
+        final_risk = min(risk_score, 100)
+        final_quality = min(quality_score + 50, 100)  # Base quality of 50
+        
+        # Adjust quality based on risk (high risk lowers quality)
+        if final_risk > 50:
+            final_quality = max(final_quality - (final_risk - 50) * 0.5, 10)
+        
         return SentimentResult(
             sentiment=sentiment,
             score=net_score,
             confidence=confidence,
-            signals=matched_signals[:10]  # Top 10 signals
+            signals=matched_signals[:10],  # Top 10 signals
+            risk_score=final_risk,
+            quality_score=final_quality,
+            risk_factors=risk_factors[:5],
+            quality_factors=quality_factors[:5],
         )
+    
+    def get_message_insights(self, text: str) -> Dict:
+        """Get detailed insights for a message"""
+        result = self.analyze(text)
+        
+        return {
+            "sentiment": result.sentiment.value,
+            "sentiment_score": result.score,
+            "confidence": result.confidence,
+            "risk_score": result.risk_score,
+            "quality_score": result.quality_score,
+            "risk_factors": result.risk_factors,
+            "quality_factors": result.quality_factors,
+            "signals": result.signals,
+            "risk_level": "high" if result.risk_score > 60 else "medium" if result.risk_score > 30 else "low",
+            "quality_level": "high" if result.quality_score > 70 else "medium" if result.quality_score > 40 else "low",
+        }
     
     def classify_message(self, text: str) -> Tuple[str, float]:
         """Classify message type: call, alert, discussion, spam"""

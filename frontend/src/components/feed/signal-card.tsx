@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { 
@@ -9,10 +10,13 @@ import {
   Wallet,
   ChevronRight,
   Flame,
-  AlertCircle
+  AlertCircle,
+  Copy,
+  Check
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, truncateAddress } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
+import { fetchTokenInfo } from "@/components/token-display";
 
 interface SignalCardProps {
   signal: {
@@ -50,8 +54,30 @@ interface SignalCardProps {
 }
 
 export function SignalCard({ signal }: SignalCardProps) {
+  const [tokenInfo, setTokenInfo] = useState<{ symbol: string; name: string } | null>(null);
+  const [copied, setCopied] = useState(false);
   const isHot = signal.score >= 70;
   const isNew = signal.timing.age_minutes < 5;
+
+  // Fetch token info if symbol is missing
+  useEffect(() => {
+    if (!signal.token.symbol && signal.token.address && signal.token.address.length > 20) {
+      fetchTokenInfo(signal.token.chain, signal.token.address).then(setTokenInfo);
+    }
+  }, [signal.token.symbol, signal.token.address, signal.token.chain]);
+
+  const displaySymbol = signal.token.symbol || tokenInfo?.symbol;
+  const displayName = tokenInfo?.name;
+
+  const copyAddress = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (signal.token.address) {
+      navigator.clipboard.writeText(signal.token.address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   const getSentimentColor = () => {
     if (signal.sentiment.percent_bullish >= 70) return "text-bullish";
@@ -86,12 +112,12 @@ export function SignalCard({ signal }: SignalCardProps) {
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-primary-600/20 flex items-center justify-center text-lg font-bold">
-              {signal.token.symbol?.[0] || "?"}
+              {(displaySymbol)?.[0] || "?"}
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-bold text-lg">
-                  ${signal.token.symbol || signal.token.address?.slice(0, 8)}
+                  {displaySymbol ? `$${displaySymbol}` : truncateAddress(signal.token.address || "")}
                 </h3>
                 <span className={cn("px-2 py-0.5 rounded text-xs font-medium", getChainBadgeColor())}>
                   {signal.token.chain}
@@ -101,9 +127,22 @@ export function SignalCard({ signal }: SignalCardProps) {
                     NEW
                   </span>
                 )}
+                {signal.token.address && (
+                  <button
+                    onClick={copyAddress}
+                    className="p-1 hover:bg-terminal-border rounded transition-colors"
+                    title={copied ? "Copied!" : "Copy address"}
+                  >
+                    {copied ? (
+                      <Check className="w-3 h-3 text-bullish" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-terminal-muted" />
+                    )}
+                  </button>
+                )}
               </div>
               <p className="text-sm text-terminal-muted">
-                First seen {formatDistanceToNow(new Date(signal.timing.first_seen))} ago
+                {displayName ? `${displayName} • ` : ""}First seen {formatDistanceToNow(new Date(signal.timing.first_seen))} ago
               </p>
             </div>
           </div>

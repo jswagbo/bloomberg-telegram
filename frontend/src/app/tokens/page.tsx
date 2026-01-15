@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn, formatPrice, formatNumber, truncateAddress } from "@/lib/utils";
+import { TokenDisplay } from "@/components/token-display";
 
 export default function TokensPage() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -140,15 +141,12 @@ export default function TokensPage() {
                     {index + 1}
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">
-                        ${signal.token.symbol || truncateAddress(signal.token.address)}
-                      </span>
-                      <span className="text-xs px-2 py-0.5 rounded bg-terminal-border text-terminal-muted">
-                        {signal.token.chain}
-                      </span>
-                    </div>
-                    <div className="text-sm text-terminal-muted">
+                    <TokenDisplay 
+                      symbol={signal.token.symbol}
+                      address={signal.token.address}
+                      chain={signal.token.chain}
+                    />
+                    <div className="text-sm text-terminal-muted mt-1">
                       {signal.metrics.unique_sources} sources • {signal.metrics.total_mentions} mentions
                     </div>
                   </div>

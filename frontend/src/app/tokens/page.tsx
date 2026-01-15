@@ -1,175 +1,162 @@
 "use client";
 
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { motion } from "framer-motion";
 import { 
-  Search, 
+  BarChart3, 
   TrendingUp, 
   TrendingDown,
-  ExternalLink
+  Clock,
+  Users,
+  ArrowUpRight,
+  Flame
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { cn, formatPrice, formatNumber, truncateAddress } from "@/lib/utils";
-import { TokenDisplay } from "@/components/token-display";
+import { cn, truncateAddress } from "@/lib/utils";
+import { formatDistanceToNow } from "date-fns";
 
 export default function TokensPage() {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedChain, setSelectedChain] = useState<string | null>(null);
-
-  const { data: searchResults, isLoading: searching } = useQuery({
-    queryKey: ["token-search", searchQuery, selectedChain],
-    queryFn: () => api.searchTokens(searchQuery, selectedChain || undefined),
-    enabled: searchQuery.length > 1,
-  });
-
-  const { data: trendingSignals } = useQuery({
-    queryKey: ["trending-signals"],
-    queryFn: () => api.getTrendingSignals(undefined, 10),
+  const { data: signals, isLoading } = useQuery({
+    queryKey: ["all-tokens"],
+    queryFn: () => api.getSignalFeed({ limit: 50 }),
+    staleTime: 1000 * 60,
   });
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">Token Search</h1>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <BarChart3 className="w-6 h-6 text-primary-400" />
+          Token Tracker
+        </h1>
         <p className="text-terminal-muted mt-1">
-          Search for tokens or browse trending signals
+          All tokens being discussed in monitored channels
         </p>
       </div>
 
-      {/* Search */}
-      <div className="flex gap-4">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-terminal-muted" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name, symbol, or address..."
-            className="w-full pl-10 pr-4 py-3 bg-terminal-card border border-terminal-border rounded-xl focus:border-primary-600 focus:outline-none"
-          />
-        </div>
-        <select
-          value={selectedChain || ""}
-          onChange={(e) => setSelectedChain(e.target.value || null)}
-          className="px-4 py-3 bg-terminal-card border border-terminal-border rounded-xl focus:border-primary-600 focus:outline-none"
-        >
-          <option value="">All Chains</option>
-          <option value="solana">Solana</option>
-          <option value="base">Base</option>
-          <option value="bsc">BSC</option>
-        </select>
-      </div>
-
-      {/* Search Results */}
-      {searchQuery.length > 1 && (
-        <div className="bg-terminal-card border border-terminal-border rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-terminal-border">
-            <h2 className="font-medium">Search Results</h2>
-          </div>
-
-          {searching ? (
-            <div className="p-6 text-center text-terminal-muted">
-              Searching...
-            </div>
-          ) : searchResults?.length > 0 ? (
-            <div className="divide-y divide-terminal-border">
-              {searchResults.map((token: any) => (
-                <Link
-                  key={`${token.chain}-${token.address}`}
-                  href={`/token/${token.chain}/${token.address}`}
-                  className="flex items-center justify-between px-6 py-4 hover:bg-terminal-border/50 transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary-600/20 flex items-center justify-center">
-                      {token.symbol?.[0] || "?"}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{token.symbol || truncateAddress(token.address)}</span>
-                        <span className="text-xs px-2 py-0.5 rounded bg-terminal-border text-terminal-muted">
-                          {token.chain}
+      {/* Token Table */}
+      <div className="bg-terminal-card border border-terminal-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-terminal-border">
+                <th className="text-left text-sm font-medium text-terminal-muted px-4 py-3">Token</th>
+                <th className="text-left text-sm font-medium text-terminal-muted px-4 py-3">Chain</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3">Score</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3">Mentions</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3">Sources</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3">Sentiment</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3">First Seen</th>
+                <th className="text-right text-sm font-medium text-terminal-muted px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                Array(10).fill(0).map((_, i) => (
+                  <tr key={i} className="border-b border-terminal-border">
+                    {Array(8).fill(0).map((_, j) => (
+                      <td key={j} className="px-4 py-4">
+                        <div className="h-5 bg-terminal-border rounded animate-pulse" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : signals?.length > 0 ? (
+                signals.map((signal: any, i: number) => (
+                  <motion.tr
+                    key={signal.cluster_id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.03 }}
+                    className="border-b border-terminal-border hover:bg-terminal-border/50 transition-colors"
+                  >
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-primary-600/20 flex items-center justify-center font-bold">
+                          {signal.token?.symbol?.[0] || "?"}
+                        </div>
+                        <div>
+                          <div className="font-medium">
+                            {signal.token?.symbol ? `$${signal.token.symbol}` : truncateAddress(signal.token?.address || "")}
+                          </div>
+                          {signal.token?.name && (
+                            <div className="text-xs text-terminal-muted">{signal.token.name}</div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded text-xs",
+                        signal.token?.chain === "solana" ? "bg-purple-500/20 text-purple-400" :
+                        signal.token?.chain === "base" ? "bg-blue-500/20 text-blue-400" :
+                        "bg-yellow-500/20 text-yellow-400"
+                      )}>
+                        {signal.token?.chain}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <div className={cn(
+                        "flex items-center justify-end gap-1 font-medium",
+                        signal.score >= 70 ? "text-fire" : "text-terminal-text"
+                      )}>
+                        {signal.score >= 70 && <Flame className="w-4 h-4" />}
+                        {signal.score.toFixed(0)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-right text-terminal-text">
+                      {signal.metrics?.total_mentions}
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1 text-terminal-text">
+                        <Users className="w-3 h-3 text-terminal-muted" />
+                        {signal.metrics?.unique_sources}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        {signal.sentiment?.percent_bullish >= 60 ? (
+                          <TrendingUp className="w-4 h-4 text-bullish" />
+                        ) : signal.sentiment?.percent_bullish <= 40 ? (
+                          <TrendingDown className="w-4 h-4 text-bearish" />
+                        ) : (
+                          <div className="w-4 h-4 rounded-full bg-yellow-500/20" />
+                        )}
+                        <span className={cn(
+                          signal.sentiment?.percent_bullish >= 60 ? "text-bullish" :
+                          signal.sentiment?.percent_bullish <= 40 ? "text-bearish" :
+                          "text-yellow-400"
+                        )}>
+                          {signal.sentiment?.percent_bullish?.toFixed(0)}%
                         </span>
                       </div>
-                      {token.name && (
-                        <div className="text-sm text-terminal-muted">{token.name}</div>
-                      )}
-                    </div>
-                  </div>
-                  {token.price_usd && (
-                    <div className="text-right">
-                      <div className="font-medium">${formatPrice(token.price_usd)}</div>
-                      {token.market_cap && (
-                        <div className="text-sm text-terminal-muted">
-                          MC: ${formatNumber(token.market_cap)}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <div className="p-6 text-center text-terminal-muted">
-              No tokens found
-            </div>
-          )}
+                    </td>
+                    <td className="px-4 py-4 text-right text-terminal-muted text-sm">
+                      {signal.timing?.first_seen && formatDistanceToNow(new Date(signal.timing.first_seen))}
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <Link
+                        href={`/token/${signal.token?.chain}/${signal.token?.address}`}
+                        className="p-2 hover:bg-terminal-border rounded-lg transition-colors inline-flex"
+                      >
+                        <ArrowUpRight className="w-4 h-4 text-primary-400" />
+                      </Link>
+                    </td>
+                  </motion.tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={8} className="px-4 py-12 text-center text-terminal-muted">
+                    No tokens found. Check back when signals start flowing.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      )}
-
-      {/* Trending */}
-      {!searchQuery && trendingSignals?.length > 0 && (
-        <div className="bg-terminal-card border border-terminal-border rounded-xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-terminal-border flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-fire" />
-            <h2 className="font-medium">Trending Now</h2>
-          </div>
-
-          <div className="divide-y divide-terminal-border">
-            {trendingSignals.map((signal: any, index: number) => (
-              <Link
-                key={signal.cluster_id}
-                href={`/token/${signal.token.chain}/${signal.token.address || signal.token.symbol}`}
-                className="flex items-center justify-between px-6 py-4 hover:bg-terminal-border/50 transition-colors"
-              >
-                <div className="flex items-center gap-4">
-                  <div className={cn(
-                    "w-8 h-8 rounded-full flex items-center justify-center font-bold",
-                    index < 3 ? "bg-fire/20 text-fire" : "bg-terminal-border text-terminal-muted"
-                  )}>
-                    {index + 1}
-                  </div>
-                  <div>
-                    <TokenDisplay 
-                      symbol={signal.token.symbol}
-                      address={signal.token.address}
-                      chain={signal.token.chain}
-                    />
-                    <div className="text-sm text-terminal-muted mt-1">
-                      {signal.metrics.unique_sources} sources • {signal.metrics.total_mentions} mentions
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className={cn(
-                    "font-bold",
-                    signal.score >= 70 ? "text-fire" : "text-terminal-text"
-                  )}>
-                    Score: {signal.score.toFixed(0)}
-                  </div>
-                  <div className={cn(
-                    "text-sm",
-                    signal.sentiment.percent_bullish >= 60 ? "text-bullish" : "text-terminal-muted"
-                  )}>
-                    {signal.sentiment.percent_bullish.toFixed(0)}% bullish
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

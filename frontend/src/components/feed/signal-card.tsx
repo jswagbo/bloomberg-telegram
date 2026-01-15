@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { 
   TrendingUp, 
+  TrendingDown,
   Users, 
   Clock, 
   Wallet,
@@ -12,7 +13,9 @@ import {
   Flame,
   AlertCircle,
   Copy,
-  Check
+  Check,
+  Zap,
+  MessageSquare
 } from "lucide-react";
 import { cn, truncateAddress } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -53,11 +56,61 @@ interface SignalCardProps {
   };
 }
 
+// Circular score indicator
+function ScoreRing({ score, size = 56 }: { score: number; size?: number }) {
+  const radius = (size - 8) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const progress = (score / 100) * circumference;
+  
+  const getScoreColor = () => {
+    if (score >= 80) return "#f97316"; // fire
+    if (score >= 60) return "#22c55e"; // bullish
+    if (score >= 40) return "#eab308"; // neutral
+    return "#71717a"; // muted
+  };
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg className="transform -rotate-90" width={size} height={size}>
+        {/* Background circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="4"
+          className="text-terminal-border"
+        />
+        {/* Progress circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={getScoreColor()}
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference - progress}
+          style={{ transition: "stroke-dashoffset 0.5s ease" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-lg font-bold" style={{ color: getScoreColor() }}>
+          {score.toFixed(0)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function SignalCard({ signal }: SignalCardProps) {
   const [tokenInfo, setTokenInfo] = useState<{ symbol: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const isHot = signal.score >= 70;
   const isNew = signal.timing.age_minutes < 5;
+  const isUrgent = signal.metrics.velocity > 3;
 
   // Fetch token info if symbol is missing (fallback if backend didn't provide it)
   useEffect(() => {
@@ -80,23 +133,27 @@ export function SignalCard({ signal }: SignalCardProps) {
     }
   };
 
-  const getSentimentColor = () => {
-    if (signal.sentiment.percent_bullish >= 70) return "text-bullish";
-    if (signal.sentiment.percent_bullish <= 30) return "text-bearish";
-    return "text-neutral";
-  };
-
   const getChainBadgeColor = () => {
     switch (signal.token.chain) {
       case "solana":
-        return "bg-purple-500/20 text-purple-400";
+        return "bg-purple-500/20 text-purple-400 border-purple-500/30";
       case "base":
-        return "bg-blue-500/20 text-blue-400";
+        return "bg-blue-500/20 text-blue-400 border-blue-500/30";
       case "bsc":
-        return "bg-yellow-500/20 text-yellow-400";
+        return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       default:
-        return "bg-gray-500/20 text-gray-400";
+        return "bg-gray-500/20 text-gray-400 border-gray-500/30";
     }
+  };
+
+  const getSentimentIcon = () => {
+    if (signal.sentiment.percent_bullish >= 65) {
+      return <TrendingUp className="w-4 h-4 text-bullish" />;
+    }
+    if (signal.sentiment.percent_bullish <= 35) {
+      return <TrendingDown className="w-4 h-4 text-bearish" />;
+    }
+    return null;
   };
 
   return (
@@ -104,107 +161,132 @@ export function SignalCard({ signal }: SignalCardProps) {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        "bg-terminal-card border border-terminal-border rounded-xl p-5 hover:border-primary-600/50 transition-all cursor-pointer signal-card-glow",
-        isHot && "border-fire/30"
+        "bg-terminal-card border rounded-xl p-5 hover:border-primary-600/50 transition-all cursor-pointer group",
+        isHot ? "border-fire/40 shadow-lg shadow-fire/5" : "border-terminal-border",
+        isUrgent && "animate-pulse-slow"
       )}
     >
       <Link href={`/token/${signal.token.chain}/${signal.token.address || signal.token.symbol}`}>
-        {/* Header */}
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-primary-600/20 flex items-center justify-center text-lg font-bold">
+        {/* Header - Token Info + Score */}
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            {/* Token Avatar */}
+            <div className={cn(
+              "w-12 h-12 rounded-xl flex items-center justify-center text-xl font-bold flex-shrink-0",
+              isHot ? "bg-fire/20 text-fire" : "bg-primary-600/20 text-primary-400"
+            )}>
               {(displaySymbol)?.[0] || "?"}
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-lg">
+            
+            {/* Token Info */}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-lg truncate">
                   {displaySymbol ? `$${displaySymbol}` : truncateAddress(signal.token.address || "")}
                 </h3>
-                <span className={cn("px-2 py-0.5 rounded text-xs font-medium", getChainBadgeColor())}>
+                <span className={cn("px-2 py-0.5 rounded text-xs font-medium border", getChainBadgeColor())}>
                   {signal.token.chain}
                 </span>
                 {isNew && (
-                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-bullish/20 text-bullish">
+                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-bullish/20 text-bullish animate-pulse">
                     NEW
                   </span>
                 )}
+                {isHot && (
+                  <Flame className="w-4 h-4 text-fire fire-icon" />
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-sm text-terminal-muted mt-0.5">
+                {displayName && <span className="truncate">{displayName}</span>}
+                {displayName && <span>•</span>}
+                <Clock className="w-3 h-3" />
+                <span>{formatDistanceToNow(new Date(signal.timing.first_seen))} ago</span>
                 {signal.token.address && (
                   <button
                     onClick={copyAddress}
-                    className="p-1 hover:bg-terminal-border rounded transition-colors"
+                    className="p-1 hover:bg-terminal-border rounded transition-colors ml-1"
                     title={copied ? "Copied!" : "Copy address"}
                   >
                     {copied ? (
                       <Check className="w-3 h-3 text-bullish" />
                     ) : (
-                      <Copy className="w-3 h-3 text-terminal-muted" />
+                      <Copy className="w-3 h-3" />
                     )}
                   </button>
                 )}
               </div>
-              <p className="text-sm text-terminal-muted">
-                {displayName ? `${displayName} • ` : ""}First seen {formatDistanceToNow(new Date(signal.timing.first_seen))} ago
-              </p>
             </div>
           </div>
 
-          {/* Score */}
-          <div className={cn(
-            "flex items-center gap-2 px-3 py-1.5 rounded-lg",
-            isHot ? "bg-fire/20" : "bg-terminal-border"
-          )}>
-            {isHot && <Flame className="w-4 h-4 text-fire fire-icon" />}
-            <span className={cn("font-bold", isHot ? "text-fire" : "text-terminal-text")}>
-              {signal.score.toFixed(0)}
-            </span>
-          </div>
+          {/* Score Ring */}
+          <ScoreRing score={signal.score} />
         </div>
 
-        {/* Metrics */}
-        <div className="grid grid-cols-4 gap-4 mb-4">
-          <div className="flex items-center gap-2">
-            <Users className="w-4 h-4 text-terminal-muted" />
-            <span className="text-sm">
-              <strong>{signal.metrics.unique_sources}</strong> sources
-            </span>
+        {/* Quick Stats Row */}
+        <div className="flex items-center gap-4 mb-4 py-3 px-4 bg-terminal-bg/50 rounded-lg">
+          <div className="flex items-center gap-1.5" title="Sources mentioning">
+            <Users className="w-4 h-4 text-primary-400" />
+            <span className="font-semibold">{signal.metrics.unique_sources}</span>
+            <span className="text-xs text-terminal-muted hidden sm:inline">sources</span>
           </div>
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-terminal-muted" />
-            <span className="text-sm">
-              <strong>{signal.metrics.total_mentions}</strong> mentions
-            </span>
+          <div className="w-px h-4 bg-terminal-border" />
+          <div className="flex items-center gap-1.5" title="Total mentions">
+            <MessageSquare className="w-4 h-4 text-terminal-muted" />
+            <span className="font-semibold">{signal.metrics.total_mentions}</span>
+            <span className="text-xs text-terminal-muted hidden sm:inline">mentions</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="w-px h-4 bg-terminal-border" />
+          <div className="flex items-center gap-1.5" title="Wallets mentioned">
             <Wallet className="w-4 h-4 text-whale" />
-            <span className="text-sm">
-              <strong>{signal.metrics.unique_wallets}</strong> wallets
-            </span>
+            <span className="font-semibold">{signal.metrics.unique_wallets}</span>
+            <span className="text-xs text-terminal-muted hidden sm:inline">wallets</span>
           </div>
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-terminal-muted" />
-            <span className="text-sm">
-              <strong>{signal.metrics.velocity.toFixed(1)}</strong>/min
+          <div className="w-px h-4 bg-terminal-border" />
+          <div className="flex items-center gap-1.5" title="Mentions per minute">
+            <Zap className={cn("w-4 h-4", signal.metrics.velocity > 2 ? "text-fire" : "text-terminal-muted")} />
+            <span className={cn("font-semibold", signal.metrics.velocity > 2 && "text-fire")}>
+              {signal.metrics.velocity.toFixed(1)}
             </span>
+            <span className="text-xs text-terminal-muted hidden sm:inline">/min</span>
           </div>
         </div>
 
-        {/* Sentiment Bar */}
+        {/* Sentiment Bar - Improved */}
         <div className="mb-4">
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span className={getSentimentColor()}>
-              {signal.sentiment.percent_bullish.toFixed(0)}% bullish
-            </span>
-            <span className="text-terminal-muted text-xs">
-              {signal.sentiment.bullish}🟢 {signal.sentiment.bearish}🔴 {signal.sentiment.neutral}⚪
-            </span>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              {getSentimentIcon()}
+              <span className={cn(
+                "font-medium",
+                signal.sentiment.percent_bullish >= 65 ? "text-bullish" :
+                signal.sentiment.percent_bullish <= 35 ? "text-bearish" :
+                "text-yellow-400"
+              )}>
+                {signal.sentiment.percent_bullish.toFixed(0)}% bullish
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-terminal-muted">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-bullish" />
+                {signal.sentiment.bullish}
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-bearish" />
+                {signal.sentiment.bearish}
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-terminal-muted" />
+                {signal.sentiment.neutral}
+              </span>
+            </div>
           </div>
-          <div className="h-1.5 bg-terminal-border rounded-full overflow-hidden flex">
+          <div className="h-2 bg-terminal-border rounded-full overflow-hidden flex">
             <div 
-              className="bg-bullish h-full transition-all"
+              className="bg-bullish h-full transition-all duration-500"
               style={{ width: `${signal.sentiment.percent_bullish}%` }}
             />
             <div 
-              className="bg-bearish h-full transition-all"
+              className="bg-bearish h-full transition-all duration-500"
               style={{ width: `${100 - signal.sentiment.percent_bullish}%` }}
             />
           </div>

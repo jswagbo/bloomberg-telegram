@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { 
@@ -13,15 +14,50 @@ import {
   Flame
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { cn, truncateAddress } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 
+// Check if a token has a valid name/symbol (not just an address)
+function hasValidTokenName(signal: any): boolean {
+  const token = signal?.token;
+  if (!token) return false;
+  
+  const symbol = token.symbol;
+  const name = token.name;
+  
+  if (symbol) {
+    if (symbol.startsWith("0x") || symbol.length > 20) return false;
+    return true;
+  }
+  
+  if (name) {
+    if (name.startsWith("0x") || name.length > 40) return false;
+    return true;
+  }
+  
+  return false;
+}
+
+// Check if chain is valid (sol, base, bsc only)
+function isValidChain(signal: any): boolean {
+  const chain = signal?.token?.chain?.toLowerCase();
+  return chain === "solana" || chain === "base" || chain === "bsc";
+}
+
 export default function TokensPage() {
-  const { data: signals, isLoading } = useQuery({
+  const { data: rawSignals, isLoading } = useQuery({
     queryKey: ["all-tokens"],
     queryFn: () => api.getSignalFeed({ limit: 50 }),
     staleTime: 1000 * 60,
   });
+
+  // Filter to only show tokens with valid names on valid chains
+  const signals = useMemo(() => {
+    if (!rawSignals) return [];
+    return rawSignals.filter((signal: any) => 
+      isValidChain(signal) && hasValidTokenName(signal)
+    );
+  }, [rawSignals]);
 
   return (
     <div className="space-y-6">
@@ -75,13 +111,13 @@ export default function TokensPage() {
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full bg-primary-600/20 flex items-center justify-center font-bold">
-                          {signal.token?.symbol?.[0] || "?"}
+                          {signal.token?.symbol?.[0] || signal.token?.name?.[0] || "?"}
                         </div>
                         <div>
                           <div className="font-medium">
-                            {signal.token?.symbol ? `$${signal.token.symbol}` : truncateAddress(signal.token?.address || "")}
+                            ${signal.token?.symbol || signal.token?.name}
                           </div>
-                          {signal.token?.name && (
+                          {signal.token?.name && signal.token?.symbol && (
                             <div className="text-xs text-terminal-muted">{signal.token.name}</div>
                           )}
                         </div>

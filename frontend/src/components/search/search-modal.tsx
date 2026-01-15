@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, X, ArrowRight, Clock, TrendingUp, Loader2 } from "lucide-react";
-import { cn, truncateAddress } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 
 interface SearchResult {
   type: "token" | "recent";
@@ -63,27 +63,36 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
       const isAddress = searchQuery.length >= 32;
       
       if (isAddress) {
-        // Detect chain from address format
-        const chain = searchQuery.startsWith("0x") ? "base" : "solana";
-        setResults([{
-          type: "token",
-          address: searchQuery,
-          chain,
-          name: "View Token",
-        }]);
+        // For direct address lookup, we don't show it in results
+        // User can press Enter to navigate directly
+        setResults([]);
       } else {
         // Search by symbol - fetch from API
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/signals/feed?limit=10`
+          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/v1/signals/feed?limit=30`
         );
         
         if (response.ok) {
           const signals = await response.json();
+          const q = searchQuery.toLowerCase();
+          
+          // Filter and validate results
           const matches = signals.filter((s: any) => {
-            const symbol = s.token?.symbol?.toLowerCase() || "";
-            const name = s.token?.name?.toLowerCase() || "";
-            const q = searchQuery.toLowerCase();
-            return symbol.includes(q) || name.includes(q);
+            const symbol = s.token?.symbol || "";
+            const name = s.token?.name || "";
+            
+            // Must have a valid symbol or name (not an address)
+            const hasValidSymbol = symbol && !symbol.startsWith("0x") && symbol.length <= 20;
+            const hasValidName = name && !name.startsWith("0x") && name.length <= 40;
+            
+            if (!hasValidSymbol && !hasValidName) return false;
+            
+            // Must be on valid chain
+            const chain = s.token?.chain?.toLowerCase();
+            if (chain !== "solana" && chain !== "base" && chain !== "bsc") return false;
+            
+            // Must match search query
+            return symbol.toLowerCase().includes(q) || name.toLowerCase().includes(q);
           });
           
           setResults(matches.map((s: any) => ({
@@ -229,10 +238,10 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
                         </div>
                         <div className="flex-1 text-left">
                           <div className="font-medium text-terminal-text">
-                            {result.symbol ? `$${result.symbol}` : truncateAddress(result.address)}
+                            ${result.symbol || result.name}
                           </div>
                           <div className="text-xs text-terminal-muted">
-                            {result.name || result.chain} {result.score && `• Score: ${result.score.toFixed(0)}`}
+                            {result.name && result.symbol ? result.name : result.chain} {result.score && `• Score: ${result.score.toFixed(0)}`}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">

@@ -17,7 +17,7 @@ import {
   Zap,
   MessageSquare
 } from "lucide-react";
-import { cn, truncateAddress } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { fetchTokenInfo } from "@/components/token-display";
 
@@ -120,8 +120,23 @@ export function SignalCard({ signal }: SignalCardProps) {
     }
   }, [signal.token.symbol, signal.token.address, signal.token.chain]);
 
-  const displaySymbol = signal.token.symbol || tokenInfo?.symbol;
-  const displayName = (signal.token as any).name || tokenInfo?.name;
+  // Get display symbol - never show raw addresses
+  const rawSymbol = signal.token.symbol || tokenInfo?.symbol;
+  const displaySymbol = rawSymbol && !rawSymbol.startsWith("0x") && rawSymbol.length <= 20 
+    ? rawSymbol 
+    : null;
+  
+  // Get display name
+  const rawName = (signal.token as any).name || tokenInfo?.name;
+  const displayName = rawName && !rawName.startsWith("0x") && rawName.length <= 40 
+    ? rawName 
+    : null;
+
+  // If we don't have a valid symbol or name, don't render the card
+  // (This is a safety check - filtering should happen at feed level)
+  if (!displaySymbol && !displayName) {
+    return null;
+  }
 
   const copyAddress = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -182,7 +197,7 @@ export function SignalCard({ signal }: SignalCardProps) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-lg truncate">
-                  {displaySymbol ? `$${displaySymbol}` : truncateAddress(signal.token.address || "")}
+                  ${displaySymbol || displayName}
                 </h3>
                 <span className={cn("px-2 py-0.5 rounded text-xs font-medium border", getChainBadgeColor())}>
                   {signal.token.chain}
@@ -197,8 +212,8 @@ export function SignalCard({ signal }: SignalCardProps) {
                 )}
               </div>
               <div className="flex items-center gap-2 text-sm text-terminal-muted mt-0.5">
-                {displayName && <span className="truncate">{displayName}</span>}
-                {displayName && <span>•</span>}
+                {displayName && displaySymbol && <span className="truncate">{displayName}</span>}
+                {displayName && displaySymbol && <span>•</span>}
                 <Clock className="w-3 h-3" />
                 <span>{formatDistanceToNow(new Date(signal.timing.first_seen))} ago</span>
                 {signal.token.address && (

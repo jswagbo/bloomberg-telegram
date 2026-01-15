@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, ArrowUpDown, SlidersHorizontal, X } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { RefreshCw, ArrowUpDown, SlidersHorizontal, X, Radio, Loader2, Check, AlertCircle } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 
 const chains = [
   { id: null, label: "All", icon: "🌐" },
@@ -37,13 +38,67 @@ export function FeedFilters() {
   const { chain, minScore, minSources, setChain, setMinScore, setMinSources } = useStore();
   const [sortBy, setSortBy] = useState("score");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const queryClient = useQueryClient();
+
+  // Fetch Telegram accounts to get account ID for scanning
+  const { data: accounts } = useQuery({
+    queryKey: ["telegram-accounts"],
+    queryFn: () => api.getTelegramAccounts(),
+    retry: false,
+    staleTime: 1000 * 60 * 5,
+  });
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await queryClient.invalidateQueries({ queryKey: ["signals"] });
     setTimeout(() => setIsRefreshing(false), 1000);
+  };
+
+  const handleScan = async () => {
+    if (!accounts || accounts.length === 0) {
+      setScanResult({ success: false, message: "No Telegram account connected" });
+      setTimeout(() => setScanResult(null), 3000);
+      return;
+    }
+
+    setIsScanning(true);
+    setScanResult(null);
+
+    try {
+      // Scan from all connected accounts
+      let totalMessages = 0;
+      let totalTokens = 0;
+      let totalClusters = 0;
+
+      for (const account of accounts) {
+        if (account.is_active) {
+          const result = await api.ingestMessages(account.id, 100);
+          totalMessages += result.messages_processed || 0;
+          totalTokens += result.tokens_found || 0;
+          totalClusters += result.clusters_updated || 0;
+        }
+      }
+
+      // Refresh the feed after scanning
+      await queryClient.invalidateQueries({ queryKey: ["signals"] });
+
+      setScanResult({
+        success: true,
+        message: `Scanned ${totalMessages} messages, found ${totalTokens} tokens`,
+      });
+    } catch (error: any) {
+      console.error("Scan error:", error);
+      setScanResult({
+        success: false,
+        message: error?.response?.data?.detail || "Scan failed - check settings",
+      });
+    } finally {
+      setIsScanning(false);
+      setTimeout(() => setScanResult(null), 5000);
+    }
   };
 
   const hasActiveFilters = chain !== null || minScore > 0 || minSources > 1;
@@ -58,7 +113,43 @@ export function FeedFilters() {
     <div className="space-y-3">
       {/* Main filter bar */}
       <div className="flex items-center gap-2 flex-wrap">
-        {/* Refresh button */}
+        {/* Scan button - triggers actual Telegram ingestion */}
+        <button
+          onClick={handleScan}
+          disabled={isScanning}
+          className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+            isScanning 
+              ? "bg-primary-600/20 text-primary-400" 
+              : "bg-primary-600 text-white hover:bg-primary-700"
+          )}
+        >
+          {isScanning ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Radio className="w-4 h-4" />
+          )}
+          <span>{isScanning ? "Scanning..." : "Scan Now"}</span>
+        </button>
+
+        {/* Scan result feedback */}
+        {scanResult && (
+          <div className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-lg text-sm animate-in fade-in slide-in-from-left-2",
+            scanResult.success 
+              ? "bg-bullish/20 text-bullish" 
+              : "bg-bearish/20 text-bearish"
+          )}>
+            {scanResult.success ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <AlertCircle className="w-4 h-4" />
+            )}
+            <span>{scanResult.message}</span>
+          </div>
+        )}
+
+        {/* Refresh button - just refreshes UI */}
         <button
           onClick={handleRefresh}
           disabled={isRefreshing}

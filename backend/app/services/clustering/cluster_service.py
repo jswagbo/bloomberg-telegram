@@ -28,6 +28,7 @@ class ClusterData:
     
     # Collections
     messages: List[Dict[str, Any]] = field(default_factory=list)
+    context_messages: List[Dict[str, Any]] = field(default_factory=list)  # NEW: surrounding discussion
     source_ids: Set[str] = field(default_factory=set)
     source_names: Set[str] = field(default_factory=set)
     wallet_addresses: Set[str] = field(default_factory=set)
@@ -153,6 +154,22 @@ class ClusteringService:
         cluster.messages.append(message)
         cluster.last_seen = timestamp
         cluster.total_mentions += 1
+        
+        # Add context messages (the surrounding discussion)
+        context_msgs = message.get("context_messages", [])
+        for ctx in context_msgs:
+            # Avoid duplicates by checking text
+            ctx_text = ctx.get("text", "")
+            existing_texts = {c.get("text", "") for c in cluster.context_messages}
+            if ctx_text and ctx_text not in existing_texts:
+                cluster.context_messages.append(ctx)
+                
+                # Also count context sentiment
+                ctx_sentiment = ctx.get("sentiment", "neutral")
+                if ctx_sentiment == "bullish":
+                    cluster.sentiment_bullish += 1
+                elif ctx_sentiment == "bearish":
+                    cluster.sentiment_bearish += 1
         
         # Add source
         source_id = message.get("source_id")
@@ -345,8 +362,84 @@ class ClusteringService:
         cluster_key = self.get_cluster_key(token_address, token_symbol, chain)
         return self._active_clusters.get(cluster_key)
     
+    def _get_best_discussion_message(self, cluster: ClusterData) -> Dict[str, Any]:
+        """
+        Find the best message to show as the 'top signal'.
+        Prioritizes actual discussion/opinion messages over scan/bot messages.
+        """
+        # First, try context messages (surrounding discussion)
+        best_context = None
+        best_context_score = 0
+        
+        for ctx in cluster.context_messages:
+            text = ctx.get("text", "")
+            if not text or len(text) < 20:
+                continue
+            
+            # Skip if it looks like a bot/scan message
+            if any(skip in text.lower() for skip in ["pump.fun", "dexscreener", "birdeye", "http"]):
+                continue
+            if text.count("/") > 3:  # Likely a URL-heavy message
+                continue
+            
+            # Score based on length and content quality
+            score = len(text)
+            
+            # Bonus for opinion indicators
+            opinion_words = ["bullish", "bearish", "ape", "buy", "sell", "moon", "pump", "dev", "team", 
+                          "looks", "think", "feel", "might", "could", "should", "entry", "target",
+                          "whale", "holding", "sold", "bought", "profit", "loss", "dip"]
+            for word in opinion_words:
+                if word in text.lower():
+                    score += 50
+            
+            # Bonus for sentiment
+            if ctx.get("sentiment") in ["bullish", "bearish"]:
+                score += 30
+            
+            if score > best_context_score:
+                best_context_score = score
+                best_context = ctx
+        
+        if best_context and best_context_score > 100:
+            return {
+                "text": best_context.get("text", "")[:500],
+                "source": cluster.source_names.pop() if cluster.source_names else "Unknown",
+                "is_discussion": True,
+            }
+        
+        # Fallback to regular messages
+        for msg in reversed(cluster.messages[-10:]):
+            text = msg.get("original_text", "")
+            if not text or len(text) < 30:
+                continue
+            
+            # Skip obvious bot/scan messages
+            if any(skip in text.lower() for skip in ["pump.fun/", "dexscreener.com", "birdeye.so"]):
+                continue
+            
+            return {
+                "text": text[:500],
+                "source": msg.get("source_name", "Unknown"),
+                "is_discussion": False,
+            }
+        
+        # Last resort: just return something
+        if cluster.messages:
+            msg = cluster.messages[-1]
+            return {
+                "text": msg.get("original_text", "No discussion captured")[:500],
+                "source": msg.get("source_name", "Unknown"),
+                "is_discussion": False,
+            }
+        
+        return {"text": "", "source": "Unknown", "is_discussion": False}
+
     def to_dict(self, cluster: ClusterData) -> Dict[str, Any]:
         """Convert cluster to dictionary for API response"""
+        # Get the best discussion message
+        top_signal = self._get_best_discussion_message(cluster)
+        
         return {
             "id": cluster.id,
             "token": {
@@ -379,6 +472,8 @@ class ClusteringService:
             "sources": list(cluster.source_names),
             "wallets": list(cluster.wallet_addresses)[:10],  # Limit for API
             "top_messages": cluster.messages[-5:],  # Last 5 messages
+            "context_messages": cluster.context_messages[-10:],  # Discussion context
+            "top_signal": top_signal,  # Best discussion message
             "price": {
                 "at_first_mention": cluster.price_at_first_mention,
                 "current": cluster.price_current,

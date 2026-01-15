@@ -481,6 +481,9 @@ async def ingest_messages(
     """
     Fetch and process recent messages from all active sources.
     This is a manual trigger for message ingestion.
+    
+    Now captures CONTEXT around token mentions - the actual discussion,
+    not just the scan/bot messages.
     """
     from app.services.telegram.client import telegram_service
     from app.services.extraction.extractor import extraction_service
@@ -541,6 +544,7 @@ async def ingest_messages(
     messages_processed = 0
     tokens_found = 0
     clusters_updated = set()
+    context_window = 5  # Number of messages before/after to capture as context
     
     # Process each source
     for source in sources:
@@ -564,8 +568,13 @@ async def ingest_messages(
             
             # Fetch recent messages
             messages = await client.get_messages(entity, limit=request.limit)
+            messages_list = list(messages)  # Convert to list for indexing
             
-            for msg in messages:
+            # First pass: identify messages with tokens and their positions
+            token_message_indices = []
+            processed_messages = {}
+            
+            for i, msg in enumerate(messages_list):
                 if not msg.text:
                     continue
                 
@@ -579,28 +588,75 @@ async def ingest_messages(
                     default_chain=chain,
                 )
                 
+                processed_messages[i] = processed
                 messages_processed += 1
-                tokens_found += len(processed.tokens)
                 
-                # Add to clusters
                 if processed.tokens:
-                    processed_dict = {
-                        "id": processed.id,
-                        "source_id": processed.source_id,
-                        "source_name": processed.source_name,
-                        "timestamp": processed.timestamp,
-                        "tokens": processed.tokens,
-                        "wallets": processed.wallets,
-                        "sentiment": processed.sentiment,
-                        "original_text": processed.original_text,
-                    }
+                    tokens_found += len(processed.tokens)
+                    token_message_indices.append(i)
+            
+            # Second pass: for each token mention, gather surrounding context
+            for token_idx in token_message_indices:
+                token_msg = processed_messages[token_idx]
+                
+                # Gather context messages (before and after)
+                context_texts = []
+                
+                # Look at messages around the token mention
+                # Note: Telegram messages are in reverse chronological order (newest first)
+                # So "before" (earlier messages) are at higher indices
+                for offset in range(-context_window, context_window + 1):
+                    ctx_idx = token_idx + offset
+                    if ctx_idx < 0 or ctx_idx >= len(messages_list) or ctx_idx == token_idx:
+                        continue
                     
-                    updated = clustering_service.process_messages([processed_dict])
-                    for cluster in updated:
-                        clusters_updated.add(cluster.id)
+                    ctx_msg = messages_list[ctx_idx]
+                    if ctx_msg.text and len(ctx_msg.text) > 10:
+                        # Check if this is a meaningful message (not just a contract address)
+                        text = ctx_msg.text.strip()
+                        
+                        # Skip if it's just a contract address or URL
+                        if len(text) < 50 and (
+                            text.startswith("0x") or 
+                            "pump.fun" in text.lower() or
+                            text.startswith("http")
+                        ):
+                            continue
+                        
+                        # Get processed version if available, or create simple version
+                        if ctx_idx in processed_messages:
+                            ctx_processed = processed_messages[ctx_idx]
+                            context_texts.append({
+                                "text": ctx_processed.original_text,
+                                "sentiment": ctx_processed.sentiment,
+                                "timestamp": ctx_processed.timestamp.isoformat() if ctx_processed.timestamp else None,
+                            })
+                        else:
+                            context_texts.append({
+                                "text": text[:500],
+                                "sentiment": "neutral",
+                                "timestamp": ctx_msg.date.isoformat() if ctx_msg.date else None,
+                            })
+                
+                # Create the cluster message with context
+                processed_dict = {
+                    "id": token_msg.id,
+                    "source_id": token_msg.source_id,
+                    "source_name": token_msg.source_name,
+                    "timestamp": token_msg.timestamp,
+                    "tokens": token_msg.tokens,
+                    "wallets": token_msg.wallets,
+                    "sentiment": token_msg.sentiment,
+                    "original_text": token_msg.original_text,
+                    "context_messages": context_texts,  # NEW: surrounding discussion
+                }
+                
+                updated = clustering_service.process_messages([processed_dict])
+                for cluster in updated:
+                    clusters_updated.add(cluster.id)
             
             # Update source message count
-            source.total_messages += len(messages)
+            source.total_messages += len(messages_list)
             
         except Exception as e:
             logger.error("ingest_source_error", source=source.name, error=str(e))

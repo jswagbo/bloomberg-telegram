@@ -247,19 +247,8 @@ class RankingService:
         # Build response
         signals = []
         for cluster in ranked[:limit]:
-            # Get top message
-            top_message = None
-            if cluster.messages:
-                # Prefer messages from high-trust sources
-                for msg in reversed(cluster.messages):
-                    source_id = msg.get("source_id")
-                    rep = source_tracker.get_source_reputation(source_id)
-                    if rep and rep.get("scores", {}).get("trust", 0) > 60:
-                        top_message = msg
-                        break
-                
-                if not top_message:
-                    top_message = cluster.messages[-1]  # Latest message
+            # Get the best discussion message (prioritizes actual discussion over scan messages)
+            top_signal = self._get_best_discussion_message(cluster)
             
             signal = {
                 "cluster_id": cluster.id,
@@ -286,10 +275,7 @@ class RankingService:
                     "first_seen": cluster.first_seen.isoformat(),
                     "age_minutes": (datetime.utcnow() - cluster.first_seen).total_seconds() / 60,
                 },
-                "top_signal": {
-                    "text": top_message.get("original_text", "")[:200] if top_message else None,
-                    "source": top_message.get("source_name") if top_message else None,
-                },
+                "top_signal": top_signal,
                 "sources": list(cluster.source_names)[:5],
                 "wallets": list(cluster.wallet_addresses)[:3],
             }
@@ -297,6 +283,87 @@ class RankingService:
             signals.append(signal)
         
         return signals
+
+    def _get_best_discussion_message(self, cluster: ClusterData) -> Dict[str, Any]:
+        """
+        Find the best message to show as the 'top signal'.
+        Prioritizes actual discussion/opinion messages over scan/bot messages.
+        """
+        # First, try context messages (surrounding discussion)
+        best_context = None
+        best_context_score = 0
+        
+        for ctx in cluster.context_messages:
+            text = ctx.get("text", "")
+            if not text or len(text) < 20:
+                continue
+            
+            # Skip if it looks like a bot/scan message
+            if any(skip in text.lower() for skip in ["pump.fun", "dexscreener", "birdeye", "http"]):
+                continue
+            if text.count("/") > 3:  # Likely a URL-heavy message
+                continue
+            
+            # Score based on length and content quality
+            score = min(len(text), 300)  # Cap length bonus
+            
+            # Bonus for opinion indicators
+            opinion_words = ["bullish", "bearish", "ape", "buy", "sell", "moon", "pump", "dev", "team", 
+                          "looks", "think", "feel", "might", "could", "should", "entry", "target",
+                          "whale", "holding", "sold", "bought", "profit", "loss", "dip", "send",
+                          "gem", "alpha", "early", "undervalued", "potential", "legit", "rug",
+                          "scam", "careful", "risky", "safe", "trust", "based"]
+            for word in opinion_words:
+                if word in text.lower():
+                    score += 40
+            
+            # Bonus for sentiment
+            if ctx.get("sentiment") in ["bullish", "bearish"]:
+                score += 50
+            
+            if score > best_context_score:
+                best_context_score = score
+                best_context = ctx
+        
+        if best_context and best_context_score > 80:
+            source_name = list(cluster.source_names)[0] if cluster.source_names else "Unknown"
+            return {
+                "text": best_context.get("text", "")[:500],
+                "source": source_name,
+                "is_discussion": True,
+            }
+        
+        # Fallback: look through regular messages for discussion-like content
+        for msg in reversed(cluster.messages[-10:]):
+            text = msg.get("original_text", "")
+            if not text or len(text) < 30:
+                continue
+            
+            # Skip obvious bot/scan messages
+            if any(skip in text.lower() for skip in ["pump.fun/", "dexscreener.com", "birdeye.so"]):
+                continue
+            
+            # Check if it has opinion content
+            has_opinion = any(word in text.lower() for word in 
+                           ["bullish", "bearish", "looks", "think", "ape", "buy", "moon", "gem"])
+            
+            if has_opinion or len(text) > 100:
+                return {
+                    "text": text[:500],
+                    "source": msg.get("source_name", "Unknown"),
+                    "is_discussion": has_opinion,
+                }
+        
+        # Last resort: just return something
+        if cluster.messages:
+            msg = cluster.messages[-1]
+            return {
+                "text": msg.get("original_text", "No discussion captured")[:500],
+                "source": msg.get("source_name", "Unknown"),
+                "is_discussion": False,
+            }
+        
+        return {"text": "", "source": "Unknown", "is_discussion": False}
     
     def _get_overall_sentiment(self, cluster: ClusterData) -> str:
         """Determine overall sentiment from counts"""

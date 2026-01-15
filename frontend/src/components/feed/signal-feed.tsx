@@ -16,17 +16,29 @@ function hasValidTokenName(signal: any): boolean {
   const symbol = token.symbol;
   const name = token.name;
   
+  // Helper to check if a string looks like an address or truncated address
+  const looksLikeAddress = (str: string): boolean => {
+    if (!str) return true;
+    // Starts with 0x (ETH/Base address)
+    if (str.startsWith("0x")) return true;
+    // Contains "..." (truncated address like "Eqqu...Athd")
+    if (str.includes("...")) return true;
+    // Too long to be a symbol
+    if (str.length > 15) return true;
+    // Looks like a Solana address (long alphanumeric, no spaces, mixed case)
+    if (str.length > 10 && /^[a-zA-Z0-9]+$/.test(str) && /[a-z]/.test(str) && /[A-Z]/.test(str) && /\d/.test(str)) return true;
+    // Ends with "pump" (pump.fun addresses often end this way)
+    if (str.toLowerCase().endsWith("pump")) return true;
+    return false;
+  };
+  
   // Must have a symbol that's not just an address
-  if (symbol) {
-    // Reject if symbol looks like an address (starts with 0x or is very long)
-    if (symbol.startsWith("0x") || symbol.length > 20) return false;
-    // Accept valid symbols
+  if (symbol && !looksLikeAddress(symbol)) {
     return true;
   }
   
   // Check name as fallback
-  if (name) {
-    if (name.startsWith("0x") || name.length > 40) return false;
+  if (name && !looksLikeAddress(name)) {
     return true;
   }
   

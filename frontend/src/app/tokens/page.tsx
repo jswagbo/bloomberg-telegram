@@ -25,13 +25,22 @@ function hasValidTokenName(signal: any): boolean {
   const symbol = token.symbol;
   const name = token.name;
   
-  if (symbol) {
-    if (symbol.startsWith("0x") || symbol.length > 20) return false;
+  // Helper to check if a string looks like an address or truncated address
+  const looksLikeAddress = (str: string): boolean => {
+    if (!str) return true;
+    if (str.startsWith("0x")) return true;
+    if (str.includes("...")) return true;
+    if (str.length > 15) return true;
+    if (str.length > 10 && /^[a-zA-Z0-9]+$/.test(str) && /[a-z]/.test(str) && /[A-Z]/.test(str) && /\d/.test(str)) return true;
+    if (str.toLowerCase().endsWith("pump")) return true;
+    return false;
+  };
+  
+  if (symbol && !looksLikeAddress(symbol)) {
     return true;
   }
   
-  if (name) {
-    if (name.startsWith("0x") || name.length > 40) return false;
+  if (name && !looksLikeAddress(name)) {
     return true;
   }
   

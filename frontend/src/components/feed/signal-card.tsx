@@ -120,17 +120,24 @@ export function SignalCard({ signal }: SignalCardProps) {
     }
   }, [signal.token.symbol, signal.token.address, signal.token.chain]);
 
+  // Helper to check if a string looks like an address
+  const looksLikeAddress = (str: string | null | undefined): boolean => {
+    if (!str) return true;
+    if (str.startsWith("0x")) return true;
+    if (str.includes("...")) return true;
+    if (str.length > 15) return true;
+    if (str.length > 10 && /^[a-zA-Z0-9]+$/.test(str) && /[a-z]/.test(str) && /[A-Z]/.test(str) && /\d/.test(str)) return true;
+    if (str.toLowerCase().endsWith("pump")) return true;
+    return false;
+  };
+
   // Get display symbol - never show raw addresses
   const rawSymbol = signal.token.symbol || tokenInfo?.symbol;
-  const displaySymbol = rawSymbol && !rawSymbol.startsWith("0x") && rawSymbol.length <= 20 
-    ? rawSymbol 
-    : null;
+  const displaySymbol = !looksLikeAddress(rawSymbol) ? rawSymbol : null;
   
   // Get display name
   const rawName = (signal.token as any).name || tokenInfo?.name;
-  const displayName = rawName && !rawName.startsWith("0x") && rawName.length <= 40 
-    ? rawName 
-    : null;
+  const displayName = !looksLikeAddress(rawName) ? rawName : null;
 
   // If we don't have a valid symbol or name, don't render the card
   // (This is a safety check - filtering should happen at feed level)

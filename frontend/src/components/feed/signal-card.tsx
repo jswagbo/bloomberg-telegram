@@ -78,7 +78,7 @@ function extractThemes(text: string): string[] {
   if (/dev|team|founder/i.test(text)) themes.push("Team Activity");
   
   // Unique themes only
-  return [...new Set(themes)].slice(0, 3);
+  return Array.from(new Set(themes)).slice(0, 3);
 }
 
 // Clean up signal text for display

@@ -81,19 +81,55 @@ function extractThemes(text: string): string[] {
   return Array.from(new Set(themes)).slice(0, 3);
 }
 
+// Check if text looks like a scan/bot message rather than real discussion
+function isScanMessage(text: string): boolean {
+  if (!text || text.length < 20) return true;
+  
+  const lowerText = text.toLowerCase();
+  
+  // Obvious scan/bot patterns
+  const scanPatterns = [
+    "pump.fun", "dexscreener.com", "birdeye.so", "raydium.io", "jupiter.ag",
+    "ca:", "contract:", "mint:", "token address", "buy now", "presale",
+    "🔥 new", "🚀 launched", "💎 gem alert",
+  ];
+  if (scanPatterns.some(p => lowerText.includes(p))) return true;
+  
+  // URL-heavy messages
+  if ((text.match(/https?:\/\//g) || []).length > 0) return true;
+  if (text.split("/").length > 3) return true;
+  
+  // Messages that are mostly contract addresses
+  const addressPattern = /[A-Za-z0-9]{32,}/g;
+  const addressMatches = text.match(addressPattern) || [];
+  if (addressMatches.length > 0 && addressMatches.join("").length > text.length * 0.3) return true;
+  
+  return false;
+}
+
 // Clean up signal text for display
 function cleanSignalText(text: string): string {
+  if (!text) return "";
+  
+  // If it looks like a scan message, don't display it
+  if (isScanMessage(text)) return "";
+  
   // Remove URLs
   let cleaned = text.replace(/https?:\/\/[^\s]+/g, "").trim();
-  // Remove excessive whitespace
-  cleaned = cleaned.replace(/\s+/g, " ");
   // Remove contract addresses
   cleaned = cleaned.replace(/[A-Za-z0-9]{32,}/g, "").trim();
+  // Remove excessive whitespace
+  cleaned = cleaned.replace(/\s+/g, " ");
+  // Remove leftover URL fragments
+  cleaned = cleaned.replace(/\s*\/\s*\//g, " ").trim();
+  
   // Limit length
   if (cleaned.length > 280) {
     cleaned = cleaned.substring(0, 280) + "...";
   }
-  return cleaned || text.substring(0, 280);
+  
+  // Return empty if too short after cleaning (likely wasn't real content)
+  return cleaned.length >= 20 ? cleaned : "";
 }
 
 export function SignalCard({ signal }: SignalCardProps) {
@@ -248,21 +284,27 @@ export function SignalCard({ signal }: SignalCardProps) {
           )}
 
           {/* The Actual Discussion Content */}
-          {cleanedSignalText && (
-            <div className="mb-4">
-              <div className="flex items-start gap-3">
-                <Quote className="w-5 h-5 text-terminal-muted flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-terminal-text leading-relaxed">
-                    {cleanedSignalText}
+          <div className="mb-4">
+            <div className="flex items-start gap-3">
+              <Quote className="w-5 h-5 text-terminal-muted flex-shrink-0 mt-0.5" />
+              <div>
+                {cleanedSignalText ? (
+                  <>
+                    <p className="text-terminal-text leading-relaxed">
+                      {cleanedSignalText}
+                    </p>
+                    <p className="text-xs text-terminal-muted mt-2">
+                      — {signal.top_signal?.source || signal.sources[0] || "Community"}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-terminal-muted italic">
+                    Being discussed across {signal.sources.length} source{signal.sources.length !== 1 ? 's' : ''} — click for full context
                   </p>
-                  <p className="text-xs text-terminal-muted mt-2">
-                    — {signal.top_signal.source}
-                  </p>
-                </div>
+                )}
               </div>
             </div>
-          )}
+          </div>
 
           {/* Sentiment Bar - Compact */}
           <div className="flex items-center gap-3 mb-4">

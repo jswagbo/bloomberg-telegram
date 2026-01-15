@@ -362,78 +362,117 @@ class ClusteringService:
         cluster_key = self.get_cluster_key(token_address, token_symbol, chain)
         return self._active_clusters.get(cluster_key)
     
+    def _is_scan_or_bot_message(self, text: str) -> bool:
+        """Check if a message is a bot/scan message rather than real discussion"""
+        if not text:
+            return True
+        
+        text_lower = text.lower()
+        
+        # Skip URL-heavy messages
+        if "http" in text_lower or text.count("/") > 2:
+            return True
+        
+        # Skip messages with contract addresses
+        skip_patterns = [
+            "pump.fun", "dexscreener", "birdeye", "raydium", "jupiter",
+            "ca:", "contract:", "mint:", "token:", "address:",
+            "0x", "buy now", "presale", "airdrop live",
+        ]
+        if any(skip in text_lower for skip in skip_patterns):
+            return True
+        
+        # Skip messages that are mostly hex/base58 (addresses)
+        # If >30% of the text is uppercase letters mixed with numbers, likely an address
+        alphanumeric = sum(1 for c in text if c.isalnum())
+        if alphanumeric > 0:
+            uppercase_nums = sum(1 for c in text if c.isupper() or c.isdigit())
+            if uppercase_nums / alphanumeric > 0.6 and len(text) < 100:
+                return True
+        
+        # Skip very short messages
+        if len(text.strip()) < 25:
+            return True
+        
+        return False
+    
     def _get_best_discussion_message(self, cluster: ClusterData) -> Dict[str, Any]:
         """
         Find the best message to show as the 'top signal'.
-        Prioritizes actual discussion/opinion messages over scan/bot messages.
+        ONLY returns actual discussion/opinion messages, NEVER scan/bot messages.
+        Token mentions are only for tracking - the displayed chatter must be human discussion.
         """
-        # First, try context messages (surrounding discussion)
-        best_context = None
-        best_context_score = 0
+        # ONLY use context messages (surrounding discussion) - never the token mention itself
+        candidates = []
         
         for ctx in cluster.context_messages:
             text = ctx.get("text", "")
-            if not text or len(text) < 20:
-                continue
             
             # Skip if it looks like a bot/scan message
-            if any(skip in text.lower() for skip in ["pump.fun", "dexscreener", "birdeye", "http"]):
-                continue
-            if text.count("/") > 3:  # Likely a URL-heavy message
+            if self._is_scan_or_bot_message(text):
                 continue
             
-            # Score based on length and content quality
+            # Score based on content quality
             score = len(text)
             
-            # Bonus for opinion indicators
-            opinion_words = ["bullish", "bearish", "ape", "buy", "sell", "moon", "pump", "dev", "team", 
-                          "looks", "think", "feel", "might", "could", "should", "entry", "target",
-                          "whale", "holding", "sold", "bought", "profit", "loss", "dip"]
+            # Strong bonus for opinion/discussion indicators
+            opinion_words = [
+                # Analysis words
+                "bullish", "bearish", "looks", "think", "feel", "imo", "imho",
+                "might", "could", "should", "probably", "maybe", "seems",
+                # Action words
+                "ape", "aped", "buying", "selling", "holding", "sold", "bought",
+                "entry", "exit", "target", "stop", "dip", "rip",
+                # Quality indicators  
+                "dev", "team", "community", "based", "legit", "solid", "gem",
+                "alpha", "early", "narrative", "catalyst",
+                # Market terms
+                "whale", "volume", "chart", "pump", "dump", "moon", "floor",
+                "mcap", "market cap", "liquidity", "supply",
+                # Sentiment
+                "love", "hate", "excited", "worried", "confident", "risky",
+                "profit", "loss", "gains", "bags",
+            ]
             for word in opinion_words:
                 if word in text.lower():
-                    score += 50
+                    score += 40
             
-            # Bonus for sentiment
+            # Extra bonus for clear sentiment
             if ctx.get("sentiment") in ["bullish", "bearish"]:
-                score += 30
+                score += 25
             
-            if score > best_context_score:
-                best_context_score = score
-                best_context = ctx
+            # Bonus for proper sentence structure (has periods, commas)
+            if "." in text or "," in text:
+                score += 15
+            
+            if score > 50:  # Minimum threshold
+                candidates.append({
+                    "text": text,
+                    "source": ctx.get("source_name", ""),
+                    "score": score,
+                    "sentiment": ctx.get("sentiment", "neutral"),
+                })
         
-        if best_context and best_context_score > 100:
+        # Sort by score and return best
+        if candidates:
+            candidates.sort(key=lambda x: x["score"], reverse=True)
+            best = candidates[0]
+            source = best["source"] or (list(cluster.source_names)[0] if cluster.source_names else "Unknown")
             return {
-                "text": best_context.get("text", "")[:500],
-                "source": cluster.source_names.pop() if cluster.source_names else "Unknown",
+                "text": best["text"][:500],
+                "source": source,
                 "is_discussion": True,
+                "sentiment": best["sentiment"],
             }
         
-        # Fallback to regular messages
-        for msg in reversed(cluster.messages[-10:]):
-            text = msg.get("original_text", "")
-            if not text or len(text) < 30:
-                continue
-            
-            # Skip obvious bot/scan messages
-            if any(skip in text.lower() for skip in ["pump.fun/", "dexscreener.com", "birdeye.so"]):
-                continue
-            
-            return {
-                "text": text[:500],
-                "source": msg.get("source_name", "Unknown"),
-                "is_discussion": False,
-            }
-        
-        # Last resort: just return something
-        if cluster.messages:
-            msg = cluster.messages[-1]
-            return {
-                "text": msg.get("original_text", "No discussion captured")[:500],
-                "source": msg.get("source_name", "Unknown"),
-                "is_discussion": False,
-            }
-        
-        return {"text": "", "source": "Unknown", "is_discussion": False}
+        # No good discussion found - return empty rather than showing a scan message
+        # The frontend will handle this gracefully
+        return {
+            "text": "",
+            "source": list(cluster.source_names)[0] if cluster.source_names else "Unknown",
+            "is_discussion": False,
+            "sentiment": "neutral",
+        }
 
     def to_dict(self, cluster: ClusterData) -> Dict[str, Any]:
         """Convert cluster to dictionary for API response"""

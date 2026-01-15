@@ -12,6 +12,7 @@ import {
   Menu
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useStore } from "@/lib/store";
 
 const navItems = [
   { href: "/", label: "Feed", icon: Flame },
@@ -22,6 +23,7 @@ const navItems = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const { token, logout } = useStore();
 
   return (
     <nav className="sticky top-0 z-50 border-b border-terminal-border bg-terminal-bg/95 backdrop-blur">
@@ -80,12 +82,21 @@ export function Navbar() {
             </button>
 
             {/* Profile */}
-            <Link
-              href="/login"
-              className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 transition-colors text-white font-medium"
-            >
-              Sign In
-            </Link>
+            {token ? (
+              <button
+                onClick={() => logout()}
+                className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-terminal-card hover:bg-terminal-border transition-colors text-terminal-text font-medium"
+              >
+                Sign Out
+              </button>
+            ) : (
+              <Link
+                href="/login"
+                className="hidden sm:flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 transition-colors text-white font-medium"
+              >
+                Sign In
+              </Link>
+            )}
           </div>
         </div>
       </div>

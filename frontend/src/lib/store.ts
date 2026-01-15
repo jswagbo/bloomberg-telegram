@@ -8,6 +8,12 @@ interface AppState {
   setAuth: (token: string, user: any) => void;
   logout: () => void;
 
+  // Telegram credentials
+  telegramApiId: string;
+  telegramApiHash: string;
+  telegramPhone: string;
+  setTelegramCredentials: (apiId: string, apiHash: string, phone: string) => void;
+
   // Feed filters
   chain: string | null;
   minScore: number;
@@ -40,6 +46,13 @@ export const useStore = create<AppState>()(
         set({ token: null, user: null });
       },
 
+      // Telegram credentials
+      telegramApiId: "",
+      telegramApiHash: "",
+      telegramPhone: "",
+      setTelegramCredentials: (apiId, apiHash, phone) =>
+        set({ telegramApiId: apiId, telegramApiHash: apiHash, telegramPhone: phone }),
+
       // Feed filters
       chain: null,
       minScore: 0,
@@ -66,6 +79,11 @@ export const useStore = create<AppState>()(
         };
       }),
       partialize: (state) => ({
+        token: state.token,
+        user: state.user,
+        telegramApiId: state.telegramApiId,
+        telegramApiHash: state.telegramApiHash,
+        telegramPhone: state.telegramPhone,
         chain: state.chain,
         minScore: state.minScore,
         minSources: state.minSources,

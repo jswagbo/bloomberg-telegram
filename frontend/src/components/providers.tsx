@@ -17,9 +17,20 @@ export function Providers({ children }: { children: React.ReactNode }) {
       })
   );
 
-  // Hydrate zustand store on client
+  // Hydrate zustand store on client and restore auth token
   useEffect(() => {
     useStore.persist.rehydrate();
+    const unsubscribe = useStore.persist.onFinishHydration(() => {
+      if (typeof window === "undefined") return;
+      const token = localStorage.getItem("auth_token");
+      const state = useStore.getState();
+      if (token && !state.token) {
+        state.setAuth(token, state.user);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   return (

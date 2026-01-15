@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { 
   Settings, 
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useStore } from "@/lib/store";
 
 export default function SettingsPage() {
   return (
@@ -39,21 +40,61 @@ export default function SettingsPage() {
 }
 
 function TelegramSettings() {
+  const { telegramApiId, telegramApiHash, telegramPhone, setTelegramCredentials, token } = useStore();
   const [isAdding, setIsAdding] = useState(false);
   const [authStep, setAuthStep] = useState<"credentials" | "code" | "2fa" | null>(null);
   const [sessionName, setSessionName] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
-    apiId: "",
-    apiHash: "",
-    phone: "",
+    apiId: telegramApiId || "",
+    apiHash: telegramApiHash || "",
+    phone: telegramPhone || "",
     code: "",
     password: "",
   });
 
+  useEffect(() => {
+    setFormData((prev) => ({
+      ...prev,
+      apiId: telegramApiId || "",
+      apiHash: telegramApiHash || "",
+      phone: telegramPhone || "",
+    }));
+  }, [telegramApiId, telegramApiHash, telegramPhone]);
+
+  useEffect(() => {
+    setTelegramCredentials(formData.apiId, formData.apiHash, formData.phone);
+  }, [formData.apiId, formData.apiHash, formData.phone, setTelegramCredentials]);
+
   const { data: accounts, refetch } = useQuery({
     queryKey: ["telegram-accounts"],
     queryFn: () => api.getTelegramAccounts(),
-    enabled: false, // Only fetch when logged in
+    enabled: Boolean(token), // Only fetch when logged in
+  });
+
+  useEffect(() => {
+    if (token) {
+      refetch();
+    }
+  }, [token, refetch]);
+
+  const completeAuth = useMutation({
+    mutationFn: () =>
+      api.completeTelegramAuth(
+        sessionName,
+        parseInt(formData.apiId),
+        formData.apiHash,
+        formData.phone
+      ),
+    onSuccess: () => {
+      setIsAdding(false);
+      setAuthStep(null);
+      setError(null);
+      refetch();
+    },
+    onError: (err: any) => {
+      setError(err.response?.data?.detail || "Failed to save Telegram account");
+    },
   });
 
   const startAuth = useMutation({
@@ -67,9 +108,11 @@ function TelegramSettings() {
       if (data.state === "awaiting_code") {
         setAuthStep("code");
       } else if (data.state === "authenticated") {
-        setIsAdding(false);
-        refetch();
+        completeAuth.mutate();
       }
+    },
+    onError: (err: any) => {
+      setError(err.response?.data?.detail || "Failed to start Telegram auth");
     },
   });
 
@@ -79,10 +122,23 @@ function TelegramSettings() {
       if (data.state === "awaiting_2fa") {
         setAuthStep("2fa");
       } else if (data.state === "authenticated") {
-        setIsAdding(false);
-        setAuthStep(null);
-        refetch();
+        completeAuth.mutate();
       }
+    },
+    onError: (err: any) => {
+      setError(err.response?.data?.detail || "Verification failed");
+    },
+  });
+
+  const verify2FA = useMutation({
+    mutationFn: () => api.verifyTelegram2FA(sessionName, formData.password),
+    onSuccess: (data) => {
+      if (data.state === "authenticated") {
+        completeAuth.mutate();
+      }
+    },
+    onError: (err: any) => {
+      setError(err.response?.data?.detail || "2FA verification failed");
     },
   });
 
@@ -110,6 +166,11 @@ function TelegramSettings() {
       <div className="p-6">
         {isAdding ? (
           <div className="space-y-4">
+            {error && (
+              <div className="p-3 bg-bearish/20 border border-bearish/30 rounded-lg text-bearish text-sm">
+                {error}
+              </div>
+            )}
             {authStep === "credentials" && (
               <>
                 <p className="text-sm text-terminal-muted mb-4">
@@ -162,7 +223,7 @@ function TelegramSettings() {
                   </button>
                   <button
                     onClick={() => startAuth.mutate()}
-                    disabled={startAuth.isPending}
+                    disabled={startAuth.isPending || completeAuth.isPending}
                     className="flex items-center gap-2 px-4 py-2 bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
                   >
                     {startAuth.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -189,7 +250,7 @@ function TelegramSettings() {
                 </div>
                 <button
                   onClick={() => verifyCode.mutate()}
-                  disabled={verifyCode.isPending}
+                  disabled={verifyCode.isPending || completeAuth.isPending}
                   className="flex items-center gap-2 px-4 py-2 bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
                 >
                   {verifyCode.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -214,8 +275,11 @@ function TelegramSettings() {
                   />
                 </div>
                 <button
+                  onClick={() => verify2FA.mutate()}
+                  disabled={verify2FA.isPending || completeAuth.isPending}
                   className="flex items-center gap-2 px-4 py-2 bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
                 >
+                  {verify2FA.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                   Verify
                 </button>
               </>

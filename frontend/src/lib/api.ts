@@ -207,6 +207,22 @@ export const api = {
     return response.data;
   },
 
+  verifyTelegram2FA: async (sessionName: string, password: string) => {
+    const response = await apiClient.post(`/telegram/auth/verify-2fa?session_name=${sessionName}`, { password });
+    return response.data;
+  },
+
+  completeTelegramAuth: async (sessionName: string, apiId: number, apiHash: string, phone: string) => {
+    const params = new URLSearchParams({
+      session_name: sessionName,
+      api_id: String(apiId),
+      api_hash: apiHash,
+      phone,
+    });
+    const response = await apiClient.post(`/telegram/auth/complete?${params.toString()}`);
+    return response.data;
+  },
+
   getTelegramAccounts: async () => {
     const response = await apiClient.get("/telegram/accounts");
     return response.data;

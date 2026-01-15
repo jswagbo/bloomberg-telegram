@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import structlog
 
 from app.core.database import get_db
 from app.api.deps import get_current_user
@@ -15,6 +16,8 @@ from app.models.telegram import TelegramAccount, TelegramSource
 from app.services.telegram.auth import telegram_auth_service, AuthState
 from app.services.telegram.session import session_manager
 from app.core.security import encrypt_data
+
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -395,3 +398,216 @@ async def update_source(
         source.filters = filters
     
     return {"status": "ok"}
+
+
+class DialogResponse(BaseModel):
+    id: int
+    name: str
+    type: str  # channel, group, bot, user
+    username: Optional[str] = None
+    unread_count: int = 0
+
+
+@router.get("/accounts/{account_id}/dialogs", response_model=List[DialogResponse])
+async def get_account_dialogs(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get user's Telegram dialogs (channels, groups, bots).
+    Used to browse available sources to add.
+    """
+    from app.services.telegram.client import telegram_service
+    
+    # Get account and verify ownership
+    result = await db.execute(
+        select(TelegramAccount).where(
+            TelegramAccount.id == account_id,
+            TelegramAccount.user_id == current_user.id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+    
+    # Connect to Telegram if not already connected
+    if account.session_name not in telegram_service._active_clients:
+        connected = await telegram_service.connect_account(
+            session_name=account.session_name,
+            api_id_encrypted=account.api_id_encrypted,
+            api_hash_encrypted=account.api_hash_encrypted,
+            session_string_encrypted=account.session_string_encrypted,
+        )
+        if not connected:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to connect to Telegram",
+            )
+    
+    # Get dialogs
+    dialogs = await telegram_service.get_dialogs(account.session_name, limit=100)
+    
+    # Filter to only groups, channels, and bots
+    filtered = [
+        d for d in dialogs
+        if d.get("type") in ("channel", "group", "bot")
+    ]
+    
+    return filtered
+
+
+class IngestRequest(BaseModel):
+    limit: int = 50  # Messages per source
+
+
+class IngestResponse(BaseModel):
+    messages_processed: int
+    tokens_found: int
+    clusters_updated: int
+
+
+@router.post("/accounts/{account_id}/ingest", response_model=IngestResponse)
+async def ingest_messages(
+    account_id: str,
+    request: IngestRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch and process recent messages from all active sources.
+    This is a manual trigger for message ingestion.
+    """
+    from app.services.telegram.client import telegram_service
+    from app.services.extraction.extractor import extraction_service
+    from app.services.clustering.cluster_service import clustering_service
+    from telethon.tl.types import Channel, Chat
+    
+    # Get account and verify ownership
+    result = await db.execute(
+        select(TelegramAccount).where(
+            TelegramAccount.id == account_id,
+            TelegramAccount.user_id == current_user.id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+    
+    # Get active sources
+    result = await db.execute(
+        select(TelegramSource).where(
+            TelegramSource.account_id == account_id,
+            TelegramSource.is_active == True,
+        )
+    )
+    sources = result.scalars().all()
+    
+    if not sources:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active sources to ingest from",
+        )
+    
+    # Connect to Telegram if not already connected
+    if account.session_name not in telegram_service._active_clients:
+        connected = await telegram_service.connect_account(
+            session_name=account.session_name,
+            api_id_encrypted=account.api_id_encrypted,
+            api_hash_encrypted=account.api_hash_encrypted,
+            session_string_encrypted=account.session_string_encrypted,
+        )
+        if not connected:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to connect to Telegram",
+            )
+    
+    client = telegram_service._active_clients.get(account.session_name)
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Telegram client not available",
+        )
+    
+    messages_processed = 0
+    tokens_found = 0
+    clusters_updated = set()
+    
+    # Process each source
+    for source in sources:
+        try:
+            # Get entity
+            try:
+                entity_id = int(source.telegram_id)
+                entity = await client.get_entity(entity_id)
+            except ValueError:
+                entity = await client.get_entity(source.telegram_id)
+            
+            # Determine chain based on source name/keywords
+            chain = "solana"  # Default
+            source_name_lower = source.name.lower()
+            if "eth" in source_name_lower or "ethereum" in source_name_lower:
+                chain = "ethereum"
+            elif "base" in source_name_lower:
+                chain = "base"
+            elif "bsc" in source_name_lower or "bnb" in source_name_lower:
+                chain = "bsc"
+            
+            # Fetch recent messages
+            messages = await client.get_messages(entity, limit=request.limit)
+            
+            for msg in messages:
+                if not msg.text:
+                    continue
+                
+                # Process message
+                processed = extraction_service.process_message(
+                    message_id=f"{source.telegram_id}_{msg.id}",
+                    source_id=source.telegram_id,
+                    source_name=source.name,
+                    text=msg.text,
+                    timestamp=msg.date,
+                    default_chain=chain,
+                )
+                
+                messages_processed += 1
+                tokens_found += len(processed.tokens)
+                
+                # Add to clusters
+                if processed.tokens:
+                    processed_dict = {
+                        "id": processed.id,
+                        "source_id": processed.source_id,
+                        "source_name": processed.source_name,
+                        "timestamp": processed.timestamp,
+                        "tokens": processed.tokens,
+                        "wallets": processed.wallets,
+                        "sentiment": processed.sentiment,
+                        "original_text": processed.original_text,
+                    }
+                    
+                    updated = clustering_service.process_messages([processed_dict])
+                    for cluster in updated:
+                        clusters_updated.add(cluster.id)
+            
+            # Update source message count
+            source.total_messages += len(messages)
+            
+        except Exception as e:
+            logger.error("ingest_source_error", source=source.name, error=str(e))
+            continue
+    
+    return IngestResponse(
+        messages_processed=messages_processed,
+        tokens_found=tokens_found,
+        clusters_updated=len(clusters_updated),
+    )

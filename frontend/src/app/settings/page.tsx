@@ -1,16 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { 
   Settings, 
-  Key, 
   Bell, 
   MessageSquare,
   Plus,
   Trash2,
+  Loader2,
+  RefreshCw,
+  Search,
   Check,
-  Loader2
+  X,
+  Radio,
+  Users,
+  Hash
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -40,6 +45,7 @@ export default function SettingsPage() {
 }
 
 function TelegramSettings() {
+  const queryClient = useQueryClient();
   const { telegramApiId, telegramApiHash, telegramPhone, setTelegramCredentials, token } = useStore();
   const [isAdding, setIsAdding] = useState(false);
   const [authStep, setAuthStep] = useState<"credentials" | "code" | "2fa" | null>(null);
@@ -52,6 +58,10 @@ function TelegramSettings() {
     code: "",
     password: "",
   });
+
+  // Selected account for source management
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [showAddSource, setShowAddSource] = useState(false);
 
   useEffect(() => {
     setFormData((prev) => ({
@@ -66,18 +76,35 @@ function TelegramSettings() {
     setTelegramCredentials(formData.apiId, formData.apiHash, formData.phone);
   }, [formData.apiId, formData.apiHash, formData.phone, setTelegramCredentials]);
 
-  const { data: accounts, refetch } = useQuery({
+  // Fetch accounts
+  const { data: accounts, refetch: refetchAccounts } = useQuery({
     queryKey: ["telegram-accounts"],
     queryFn: () => api.getTelegramAccounts(),
-    enabled: Boolean(token), // Only fetch when logged in
+    enabled: Boolean(token),
   });
 
+  // Auto-select first account
   useEffect(() => {
-    if (token) {
-      refetch();
+    if (accounts?.length > 0 && !selectedAccountId) {
+      setSelectedAccountId(accounts[0].id);
     }
-  }, [token, refetch]);
+  }, [accounts, selectedAccountId]);
 
+  // Fetch sources for selected account
+  const { data: sources, refetch: refetchSources } = useQuery({
+    queryKey: ["telegram-sources", selectedAccountId],
+    queryFn: () => api.getTelegramSources(selectedAccountId!),
+    enabled: Boolean(selectedAccountId),
+  });
+
+  // Fetch dialogs for adding sources
+  const { data: dialogs, isLoading: dialogsLoading, refetch: refetchDialogs } = useQuery({
+    queryKey: ["telegram-dialogs", selectedAccountId],
+    queryFn: () => api.getTelegramDialogs(selectedAccountId!),
+    enabled: Boolean(selectedAccountId) && showAddSource,
+  });
+
+  // Mutations
   const completeAuth = useMutation({
     mutationFn: () =>
       api.completeTelegramAuth(
@@ -90,7 +117,7 @@ function TelegramSettings() {
       setIsAdding(false);
       setAuthStep(null);
       setError(null);
-      refetch();
+      refetchAccounts();
     },
     onError: (err: any) => {
       setError(err.response?.data?.detail || "Failed to save Telegram account");
@@ -98,11 +125,12 @@ function TelegramSettings() {
   });
 
   const startAuth = useMutation({
-    mutationFn: () => api.startTelegramAuth(
-      parseInt(formData.apiId),
-      formData.apiHash,
-      formData.phone
-    ),
+    mutationFn: () =>
+      api.startTelegramAuth(
+        parseInt(formData.apiId),
+        formData.apiHash,
+        formData.phone
+      ),
     onSuccess: (data) => {
       setSessionName(data.session_name);
       if (data.state === "awaiting_code") {
@@ -141,6 +169,51 @@ function TelegramSettings() {
       setError(err.response?.data?.detail || "2FA verification failed");
     },
   });
+
+  const addSource = useMutation({
+    mutationFn: (dialog: any) =>
+      api.addTelegramSource(selectedAccountId!, {
+        telegram_id: String(dialog.id),
+        source_type: dialog.type,
+        name: dialog.name,
+        username: dialog.username,
+        priority: "medium",
+      }),
+    onSuccess: () => {
+      refetchSources();
+      queryClient.invalidateQueries({ queryKey: ["telegram-sources"] });
+    },
+  });
+
+  const deleteSource = useMutation({
+    mutationFn: (sourceId: string) => api.deleteTelegramSource(sourceId),
+    onSuccess: () => {
+      refetchSources();
+    },
+  });
+
+  const ingestMessages = useMutation({
+    mutationFn: () => api.ingestMessages(selectedAccountId!, 50),
+    onSuccess: (data) => {
+      alert(`Processed ${data.messages_processed} messages, found ${data.tokens_found} tokens, updated ${data.clusters_updated} clusters`);
+    },
+    onError: (err: any) => {
+      alert(err.response?.data?.detail || "Ingestion failed");
+    },
+  });
+
+  const deleteAccount = useMutation({
+    mutationFn: (accountId: string) => api.deleteTelegramAccount(accountId),
+    onSuccess: () => {
+      setSelectedAccountId(null);
+      refetchAccounts();
+    },
+  });
+
+  // Check if a dialog is already added as a source
+  const isSourceAdded = (dialogId: number) => {
+    return sources?.some((s: any) => s.telegram_id === String(dialogId));
+  };
 
   return (
     <div className="bg-terminal-card border border-terminal-border rounded-xl">
@@ -286,29 +359,185 @@ function TelegramSettings() {
             )}
           </div>
         ) : accounts?.length > 0 ? (
-          <div className="space-y-3">
-            {accounts.map((account: any) => (
-              <div 
-                key={account.id}
-                className="flex items-center justify-between p-3 bg-terminal-bg rounded-lg"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={cn(
-                    "w-2 h-2 rounded-full",
-                    account.is_connected ? "bg-bullish" : "bg-terminal-muted"
-                  )} />
-                  <div>
-                    <div className="font-medium">{account.session_name}</div>
-                    <div className="text-sm text-terminal-muted">
-                      {account.is_connected ? "Connected" : "Disconnected"}
+          <div className="space-y-6">
+            {/* Account List */}
+            <div className="space-y-3">
+              {accounts.map((account: any) => (
+                <div 
+                  key={account.id}
+                  className={cn(
+                    "flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors",
+                    selectedAccountId === account.id 
+                      ? "bg-primary-600/20 border border-primary-600/30" 
+                      : "bg-terminal-bg hover:bg-terminal-border/50"
+                  )}
+                  onClick={() => setSelectedAccountId(account.id)}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "w-2 h-2 rounded-full",
+                      account.is_connected ? "bg-bullish" : "bg-terminal-muted"
+                    )} />
+                    <div>
+                      <div className="font-medium">{account.session_name}</div>
+                      <div className="text-sm text-terminal-muted">
+                        {account.is_connected ? "Connected" : "Disconnected"}
+                      </div>
                     </div>
                   </div>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm("Delete this Telegram account?")) {
+                        deleteAccount.mutate(account.id);
+                      }
+                    }}
+                    className="p-2 hover:bg-terminal-border rounded-lg transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4 text-bearish" />
+                  </button>
                 </div>
-                <button className="p-2 hover:bg-terminal-border rounded-lg transition-colors">
-                  <Trash2 className="w-4 h-4 text-bearish" />
-                </button>
+              ))}
+            </div>
+
+            {/* Sources Section */}
+            {selectedAccountId && (
+              <div className="border-t border-terminal-border pt-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-medium flex items-center gap-2">
+                    <Radio className="w-4 h-4 text-primary-400" />
+                    Monitored Sources
+                  </h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => ingestMessages.mutate()}
+                      disabled={ingestMessages.isPending || !sources?.length}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-bullish/20 text-bullish rounded-lg hover:bg-bullish/30 transition-colors text-sm disabled:opacity-50"
+                    >
+                      {ingestMessages.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4" />
+                      )}
+                      Fetch Messages
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAddSource(true);
+                        refetchDialogs();
+                      }}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors text-sm"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add Source
+                    </button>
+                  </div>
+                </div>
+
+                {/* Source List */}
+                {sources?.length > 0 ? (
+                  <div className="space-y-2">
+                    {sources.map((source: any) => (
+                      <div 
+                        key={source.id}
+                        className="flex items-center justify-between p-3 bg-terminal-bg rounded-lg"
+                      >
+                        <div className="flex items-center gap-3">
+                          {source.source_type === "channel" ? (
+                            <Hash className="w-4 h-4 text-primary-400" />
+                          ) : (
+                            <Users className="w-4 h-4 text-primary-400" />
+                          )}
+                          <div>
+                            <div className="font-medium">{source.name}</div>
+                            <div className="text-xs text-terminal-muted">
+                              {source.source_type} · {source.total_messages || 0} messages
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => deleteSource.mutate(source.id)}
+                          disabled={deleteSource.isPending}
+                          className="p-2 hover:bg-terminal-border rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4 text-bearish" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-terminal-muted text-sm text-center py-4">
+                    No sources added yet. Add channels or groups to start receiving signals.
+                  </p>
+                )}
+
+                {/* Add Source Dialog */}
+                {showAddSource && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-terminal-card border border-terminal-border rounded-xl w-full max-w-lg max-h-[80vh] overflow-hidden">
+                      <div className="p-4 border-b border-terminal-border flex items-center justify-between">
+                        <h3 className="font-medium">Add Source</h3>
+                        <button
+                          onClick={() => setShowAddSource(false)}
+                          className="p-1 hover:bg-terminal-border rounded"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div className="p-4 overflow-y-auto max-h-[60vh]">
+                        {dialogsLoading ? (
+                          <div className="flex items-center justify-center py-8">
+                            <Loader2 className="w-6 h-6 animate-spin text-primary-400" />
+                          </div>
+                        ) : dialogs?.length > 0 ? (
+                          <div className="space-y-2">
+                            {dialogs.map((dialog: any) => (
+                              <div 
+                                key={dialog.id}
+                                className="flex items-center justify-between p-3 bg-terminal-bg rounded-lg"
+                              >
+                                <div className="flex items-center gap-3">
+                                  {dialog.type === "channel" ? (
+                                    <Hash className="w-4 h-4 text-primary-400" />
+                                  ) : (
+                                    <Users className="w-4 h-4 text-primary-400" />
+                                  )}
+                                  <div>
+                                    <div className="font-medium">{dialog.name}</div>
+                                    <div className="text-xs text-terminal-muted">
+                                      {dialog.type} {dialog.username && `· @${dialog.username}`}
+                                    </div>
+                                  </div>
+                                </div>
+                                {isSourceAdded(dialog.id) ? (
+                                  <span className="flex items-center gap-1 text-bullish text-sm">
+                                    <Check className="w-4 h-4" />
+                                    Added
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => addSource.mutate(dialog)}
+                                    disabled={addSource.isPending}
+                                    className="flex items-center gap-1 px-3 py-1 bg-primary-600 rounded hover:bg-primary-700 transition-colors text-sm"
+                                  >
+                                    <Plus className="w-4 h-4" />
+                                    Add
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-terminal-muted text-center py-8">
+                            No channels or groups found. Join some Telegram channels first.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
+            )}
           </div>
         ) : (
           <p className="text-terminal-muted text-sm text-center py-8">

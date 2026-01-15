@@ -227,6 +227,43 @@ export const api = {
     const response = await apiClient.get("/telegram/accounts");
     return response.data;
   },
+
+  deleteTelegramAccount: async (accountId: string) => {
+    await apiClient.delete(`/telegram/accounts/${accountId}`);
+  },
+
+  // Telegram Dialogs (channels/groups the user can add as sources)
+  getTelegramDialogs: async (accountId: string) => {
+    const response = await apiClient.get(`/telegram/accounts/${accountId}/dialogs`);
+    return response.data;
+  },
+
+  // Telegram Sources (channels/groups being monitored)
+  getTelegramSources: async (accountId: string) => {
+    const response = await apiClient.get(`/telegram/accounts/${accountId}/sources`);
+    return response.data;
+  },
+
+  addTelegramSource: async (accountId: string, source: {
+    telegram_id: string;
+    source_type: string;
+    name: string;
+    username?: string;
+    priority?: string;
+  }) => {
+    const response = await apiClient.post(`/telegram/accounts/${accountId}/sources`, source);
+    return response.data;
+  },
+
+  deleteTelegramSource: async (sourceId: string) => {
+    await apiClient.delete(`/telegram/sources/${sourceId}`);
+  },
+
+  // Ingest messages from sources
+  ingestMessages: async (accountId: string, limit: number = 50) => {
+    const response = await apiClient.post(`/telegram/accounts/${accountId}/ingest`, { limit });
+    return response.data;
+  },
 };
 
 export default api;

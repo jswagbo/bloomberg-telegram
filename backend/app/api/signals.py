@@ -13,6 +13,7 @@ from app.services.clustering.cluster_service import clustering_service
 from app.services.ranking.ranking_service import ranking_service
 from app.services.why_moving.engine import why_moving_service
 from app.services.extraction.sentiment import sentiment_analyzer
+from app.services.llm.summarizer import llm_summarizer
 import structlog
 
 logger = structlog.get_logger()
@@ -398,8 +399,28 @@ async def get_coin_insights(
     total_sentiment = cluster.sentiment_bullish + cluster.sentiment_bearish + cluster.sentiment_neutral
     bullish_percent = (cluster.sentiment_bullish / max(total_sentiment, 1)) * 100
     
-    # Generate summary
-    summary = generate_insight_summary(
+    # Prepare sentiment data for LLM
+    sentiment_data = {
+        "overall_sentiment": "bullish" if bullish_percent > 60 else "bearish" if bullish_percent < 40 else "neutral",
+        "bullish_percent": bullish_percent,
+        "risk_score": avg_risk,
+        "quality_score": avg_quality,
+        "risk_factors": [f for f, c in top_risk_factors],
+        "quality_factors": [f for f, c in top_quality_factors],
+    }
+    
+    # Generate AI summary using LLM
+    ai_summary = await llm_summarizer.generate_token_summary(
+        token_symbol=cluster.token_symbol,
+        token_address=token_address,
+        chain=chain,
+        messages=messages,
+        sentiment_data=sentiment_data,
+        price_data=price_data,
+    )
+    
+    # Fallback summary if LLM fails
+    basic_summary = generate_insight_summary(
         cluster, price_data, avg_risk, avg_quality, bullish_percent, warnings
     )
     
@@ -449,7 +470,8 @@ async def get_coin_insights(
             "factors": [{"factor": f, "count": c} for f, c in top_risk_factors],
             "warnings": warnings,
         },
-        "summary": summary,
+        "summary": basic_summary,
+        "ai_analysis": ai_summary,
     }
 
 

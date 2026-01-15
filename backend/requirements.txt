@@ -39,6 +39,9 @@ httpx==0.26.0
 aiohttp==3.9.1
 websockets==12.0
 
+# LLM API
+groq==0.4.2
+
 # Utilities
 python-dotenv==1.0.0
 structlog==24.1.0

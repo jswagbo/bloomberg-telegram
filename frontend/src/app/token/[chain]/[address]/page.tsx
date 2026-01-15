@@ -34,15 +34,23 @@ export default function TokenDetailPage() {
   const address = params.address as string;
   const [copied, setCopied] = useState(false);
 
-  // Fetch comprehensive insights
+  // Fetch comprehensive insights - stable, no auto-refresh
   const { data: insights, isLoading: insightsLoading } = useQuery({
     queryKey: ["token-insights", chain, address],
     queryFn: () => api.getTokenInsights(chain, address),
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
   });
 
   const { data: tokenInfo, isLoading: infoLoading } = useQuery({
     queryKey: ["token-info", chain, address],
     queryFn: () => api.getTokenInfo(chain, address),
+    staleTime: 1000 * 60 * 5, // 5 minutes  
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
   });
 
   const copyAddress = () => {
@@ -157,18 +165,120 @@ export default function TokenDetailPage() {
         </div>
       </div>
 
-      {/* Summary Card */}
-      {insights?.summary && (
+      {/* AI Analysis Card */}
+      {(insights?.ai_analysis || insights?.summary) && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="bg-gradient-to-r from-primary-600/10 to-purple-600/10 border border-primary-600/30 rounded-xl p-6"
         >
-          <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
+          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
             <Zap className="w-5 h-5 text-primary-400" />
-            AI Summary
+            AI Analysis
+            {insights?.ai_analysis?.generated_by === "llm" && (
+              <span className="text-xs px-2 py-0.5 bg-primary-600/30 rounded text-primary-300">
+                Powered by {insights.ai_analysis.model || "LLM"}
+              </span>
+            )}
           </h2>
-          <p className="text-terminal-text leading-relaxed">{insights.summary}</p>
+          
+          {/* Main Summary */}
+          <p className="text-terminal-text leading-relaxed mb-4">
+            {insights?.ai_analysis?.summary || insights?.summary}
+          </p>
+          
+          {insights?.ai_analysis && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              {/* Bullish Points */}
+              {insights.ai_analysis.key_bullish_points?.length > 0 && (
+                <div className="bg-bullish/10 rounded-lg p-4">
+                  <h3 className="text-sm font-medium text-bullish mb-2 flex items-center gap-1">
+                    <TrendingUp className="w-4 h-4" />
+                    Bullish Arguments
+                  </h3>
+                  <ul className="space-y-1">
+                    {insights.ai_analysis.key_bullish_points.map((point: string, i: number) => (
+                      <li key={i} className="text-sm text-terminal-text flex items-start gap-2">
+                        <CheckCircle className="w-3 h-3 text-bullish mt-1 flex-shrink-0" />
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              
+              {/* Bearish Points */}
+              {insights.ai_analysis.key_bearish_points?.length > 0 && (
+                <div className="bg-bearish/10 rounded-lg p-4">
+                  <h3 className="text-sm font-medium text-bearish mb-2 flex items-center gap-1">
+                    <TrendingDown className="w-4 h-4" />
+                    Risk Factors
+                  </h3>
+                  <ul className="space-y-1">
+                    {insights.ai_analysis.key_bearish_points.map((point: string, i: number) => (
+                      <li key={i} className="text-sm text-terminal-text flex items-start gap-2">
+                        <AlertTriangle className="w-3 h-3 text-bearish mt-1 flex-shrink-0" />
+                        {point}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* AI Insights Row */}
+          {insights?.ai_analysis && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 pt-4 border-t border-primary-600/20">
+              <div className="text-center">
+                <div className="text-xs text-terminal-muted mb-1">Consensus</div>
+                <div className={cn(
+                  "text-sm font-medium capitalize",
+                  insights.ai_analysis.community_consensus === "bullish" ? "text-bullish" :
+                  insights.ai_analysis.community_consensus === "bearish" ? "text-bearish" :
+                  "text-yellow-400"
+                )}>
+                  {insights.ai_analysis.community_consensus || "Mixed"}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-terminal-muted mb-1">Risk Level</div>
+                <div className={cn(
+                  "text-sm font-medium capitalize",
+                  insights.ai_analysis.risk_assessment === "high" ? "text-bearish" :
+                  insights.ai_analysis.risk_assessment === "low" ? "text-bullish" :
+                  "text-yellow-400"
+                )}>
+                  {insights.ai_analysis.risk_assessment || "Medium"}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-terminal-muted mb-1">Alpha Quality</div>
+                <div className={cn(
+                  "text-sm font-medium capitalize",
+                  insights.ai_analysis.alpha_quality === "high" ? "text-bullish" :
+                  insights.ai_analysis.alpha_quality === "low" ? "text-bearish" :
+                  "text-yellow-400"
+                )}>
+                  {insights.ai_analysis.alpha_quality || "Medium"}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-terminal-muted mb-1">Recommendation</div>
+                <div className="text-sm font-medium text-primary-400 truncate">
+                  {insights.ai_analysis.recommendation?.split(" - ")[0] || "DYOR"}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Notable Mentions */}
+          {insights?.ai_analysis?.notable_mentions && (
+            <div className="mt-4 pt-4 border-t border-primary-600/20">
+              <div className="text-xs text-terminal-muted mb-1">Notable Activity</div>
+              <p className="text-sm text-terminal-text">{insights.ai_analysis.notable_mentions}</p>
+            </div>
+          )}
         </motion.div>
       )}
 

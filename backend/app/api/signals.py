@@ -13,7 +13,9 @@ from app.services.clustering.cluster_service import clustering_service
 from app.services.ranking.ranking_service import ranking_service
 from app.services.why_moving.engine import why_moving_service
 from app.services.extraction.sentiment import sentiment_analyzer
+from app.services.extraction.context_extractor import context_extractor
 from app.services.llm.summarizer import llm_summarizer
+from app.services.token.metadata import token_metadata_service
 import structlog
 
 logger = structlog.get_logger()
@@ -88,6 +90,30 @@ async def get_signal_feed(
         filtered,
         limit=limit,
     )
+    
+    # Fetch token metadata for signals that have addresses but no symbols
+    tokens_to_fetch = []
+    for signal in signals:
+        token = signal.get("token", {})
+        if token.get("address") and not token.get("symbol"):
+            tokens_to_fetch.append({
+                "address": token["address"],
+                "chain": token.get("chain", "solana")
+            })
+    
+    # Batch fetch token metadata
+    if tokens_to_fetch:
+        metadata = await token_metadata_service.batch_get_token_info(tokens_to_fetch)
+        
+        # Update signals with fetched metadata
+        for signal in signals:
+            token = signal.get("token", {})
+            if token.get("address") and not token.get("symbol"):
+                cache_key = f"{token.get('chain', 'solana')}:{token['address']}"
+                if cache_key in metadata:
+                    token_info = metadata[cache_key]
+                    signal["token"]["symbol"] = token_info.get("symbol")
+                    signal["token"]["name"] = token_info.get("name")
     
     return signals
 
@@ -424,6 +450,9 @@ async def get_coin_insights(
         cluster, price_data, avg_risk, avg_quality, bullish_percent, warnings
     )
     
+    # Extract rich context from all messages
+    rich_context = context_extractor.extract_token_context(messages, token_address)
+    
     return {
         "token": {
             "address": token_address,
@@ -470,6 +499,7 @@ async def get_coin_insights(
             "factors": [{"factor": f, "count": c} for f, c in top_risk_factors],
             "warnings": warnings,
         },
+        "rich_context": rich_context,  # NEW: narratives, price targets, catalysts, etc.
         "summary": basic_summary,
         "ai_analysis": ai_summary,
     }

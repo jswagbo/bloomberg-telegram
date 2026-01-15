@@ -282,6 +282,143 @@ export default function TokenDetailPage() {
         </motion.div>
       )}
 
+      {/* Rich Context - Narratives & Intel */}
+      {insights?.rich_context && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-terminal-card border border-terminal-border rounded-xl p-6"
+        >
+          <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <MessageSquare className="w-5 h-5 text-primary-400" />
+            Community Intel
+            <span className="text-xs px-2 py-0.5 bg-terminal-border rounded text-terminal-muted ml-2">
+              {insights.rich_context.messages_analyzed} messages analyzed
+            </span>
+          </h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Top Narratives */}
+            {insights.rich_context.top_narratives?.length > 0 && (
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <h3 className="text-sm font-medium text-terminal-muted mb-3">Dominant Narratives</h3>
+                <div className="space-y-2">
+                  {insights.rich_context.top_narratives.map((narrative: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between">
+                      <span className="text-sm capitalize">
+                        {narrative.type.replace(/_/g, ' ')}
+                      </span>
+                      <span className="text-xs px-2 py-0.5 bg-primary-600/20 rounded text-primary-400">
+                        {narrative.count}x
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Price Targets */}
+            {insights.rich_context.price_targets?.count > 0 && (
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <h3 className="text-sm font-medium text-terminal-muted mb-3">Price Targets Mentioned</h3>
+                <div className="space-y-2">
+                  {insights.rich_context.price_targets.average && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-terminal-muted">Average Target</span>
+                      <span className="text-sm font-medium text-bullish">
+                        ${insights.rich_context.price_targets.average.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                      </span>
+                    </div>
+                  )}
+                  {insights.rich_context.price_targets.max && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-terminal-muted">Highest Target</span>
+                      <span className="text-sm font-medium">
+                        ${insights.rich_context.price_targets.max.toLocaleString(undefined, {maximumFractionDigits: 2})}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-terminal-muted">Total Mentions</span>
+                    <span className="text-sm">{insights.rich_context.price_targets.count}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Catalysts */}
+            {insights.rich_context.catalyst_mentions?.length > 0 && (
+              <div className="bg-terminal-bg rounded-lg p-4">
+                <h3 className="text-sm font-medium text-terminal-muted mb-3">Upcoming Catalysts</h3>
+                <ul className="space-y-1">
+                  {insights.rich_context.catalyst_mentions.slice(0, 3).map((catalyst: string, i: number) => (
+                    <li key={i} className="text-sm text-terminal-text flex items-start gap-2">
+                      <Zap className="w-3 h-3 text-fire mt-1 flex-shrink-0" />
+                      {catalyst}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {/* Risk Mentions */}
+            {insights.rich_context.risk_mentions?.length > 0 && (
+              <div className="bg-bearish/10 rounded-lg p-4">
+                <h3 className="text-sm font-medium text-bearish mb-3">Risk Signals</h3>
+                <ul className="space-y-1">
+                  {insights.rich_context.risk_mentions.slice(0, 3).map((risk: string, i: number) => (
+                    <li key={i} className="text-sm text-terminal-text flex items-start gap-2">
+                      <AlertTriangle className="w-3 h-3 text-bearish mt-1 flex-shrink-0" />
+                      {risk}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          
+          {/* Highlights */}
+          {insights.rich_context.highlights?.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-terminal-border">
+              <h3 className="text-sm font-medium text-terminal-muted mb-3">Key Quotes</h3>
+              <div className="space-y-2">
+                {insights.rich_context.highlights.slice(0, 5).map((quote: string, i: number) => (
+                  <div key={i} className="text-sm text-terminal-text bg-terminal-bg rounded p-3 italic">
+                    "{quote}"
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Conviction & Urgency */}
+          <div className="mt-4 pt-4 border-t border-terminal-border flex gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-terminal-muted">Community Conviction:</span>
+              <span className={cn(
+                "text-sm font-medium capitalize",
+                insights.rich_context.conviction_level === "high" ? "text-bullish" :
+                insights.rich_context.conviction_level === "low" ? "text-bearish" :
+                "text-yellow-400"
+              )}>
+                {insights.rich_context.conviction_level || "Medium"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-terminal-muted">Urgency:</span>
+              <span className={cn(
+                "text-sm font-medium capitalize",
+                insights.rich_context.urgency_level === "urgent" ? "text-fire" :
+                insights.rich_context.urgency_level === "high" ? "text-yellow-400" :
+                "text-terminal-text"
+              )}>
+                {insights.rich_context.urgency_level || "Normal"}
+              </span>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Quantitative Metrics */}

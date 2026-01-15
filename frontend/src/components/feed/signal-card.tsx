@@ -59,15 +59,16 @@ export function SignalCard({ signal }: SignalCardProps) {
   const isHot = signal.score >= 70;
   const isNew = signal.timing.age_minutes < 5;
 
-  // Fetch token info if symbol is missing
+  // Fetch token info if symbol is missing (fallback if backend didn't provide it)
   useEffect(() => {
-    if (!signal.token.symbol && signal.token.address && signal.token.address.length > 20) {
+    const hasSymbol = signal.token.symbol || (signal.token as any).name;
+    if (!hasSymbol && signal.token.address && signal.token.address.length > 20) {
       fetchTokenInfo(signal.token.chain, signal.token.address).then(setTokenInfo);
     }
   }, [signal.token.symbol, signal.token.address, signal.token.chain]);
 
   const displaySymbol = signal.token.symbol || tokenInfo?.symbol;
-  const displayName = tokenInfo?.name;
+  const displayName = (signal.token as any).name || tokenInfo?.name;
 
   const copyAddress = (e: React.MouseEvent) => {
     e.preventDefault();

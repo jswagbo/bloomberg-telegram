@@ -45,6 +45,8 @@ interface NewPairToken {
   age_hours: number;
   dex_name: string;
   is_boosted: boolean;
+  is_pump_fun: boolean;  // From pump.fun
+  is_migrated: boolean;  // Migrated to PumpSwap/Raydium
   
   image_url: string | null;
   dexscreener_url: string;
@@ -84,6 +86,14 @@ function NewPairCard({ token }: { token: NewPairToken }) {
     return `${Math.round(hours / 24)}d`;
   };
 
+  // Format market cap
+  const formatMarketCap = (mcap: number | null) => {
+    if (!mcap) return "—";
+    if (mcap >= 1_000_000) return `$${(mcap / 1_000_000).toFixed(1)}M`;
+    if (mcap >= 1_000) return `$${(mcap / 1_000).toFixed(0)}K`;
+    return `$${mcap.toFixed(0)}`;
+  };
+
   // Holder distribution health (good if top 10 holds less)
   const holderHealth = token.top_10_percent < 20 ? "excellent" : 
                        token.top_10_percent < 30 ? "good" : 
@@ -109,7 +119,7 @@ function NewPairCard({ token }: { token: NewPairToken }) {
             </div>
             
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold">${token.symbol}</h3>
                 <span className={cn(
                   "text-xs px-1.5 py-0.5 rounded",
@@ -119,8 +129,18 @@ function NewPairCard({ token }: { token: NewPairToken }) {
                 )}>
                   {token.chain}
                 </span>
+                {token.is_pump_fun && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-400">
+                    pump.fun
+                  </span>
+                )}
+                {token.is_migrated && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">
+                    Migrated
+                  </span>
+                )}
                 {token.is_boosted && (
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 flex items-center gap-1">
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 flex items-center gap-1">
                     <Zap className="w-3 h-3" /> Paid
                   </span>
                 )}
@@ -129,13 +149,11 @@ function NewPairCard({ token }: { token: NewPairToken }) {
             </div>
           </div>
 
-          {/* Price */}
+          {/* Market Cap + Price Change */}
           <div className="text-right">
-            {token.price_usd && (
-              <p className="font-mono text-sm">
-                ${token.price_usd < 0.01 ? token.price_usd.toExponential(2) : token.price_usd.toFixed(4)}
-              </p>
-            )}
+            <p className="font-mono text-sm font-bold text-primary-400">
+              {formatMarketCap(token.market_cap)}
+            </p>
             {priceChange !== null && (
               <p className={cn(
                 "text-xs flex items-center gap-1 justify-end font-medium",
@@ -381,9 +399,9 @@ export function TrendingFeed() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold">New Pairs (Last 24h)</h2>
+          <h2 className="text-xl font-bold">Migrated Tokens (pump.fun → DEX)</h2>
           <p className="text-sm text-terminal-muted">
-            50+ holders • Top 10 wallets &lt; 40% • Fresh launches
+            Graduated tokens with $50K+ market cap • Recently migrated to PumpSwap/Raydium
           </p>
         </div>
         

@@ -133,6 +133,8 @@ class NewPairResponse(BaseModel):
     age_hours: float
     dex_name: str
     is_boosted: bool
+    is_pump_fun: bool  # From pump.fun
+    is_migrated: bool  # Migrated to PumpSwap/Raydium
     
     image_url: Optional[str]
     dexscreener_url: str
@@ -607,6 +609,8 @@ async def get_new_pairs_feed(
             age_hours=pair.age_hours,
             dex_name=pair.dex_name,
             is_boosted=pair.is_boosted,
+            is_pump_fun=pair.is_pump_fun,
+            is_migrated=pair.is_migrated,
             image_url=pair.image_url,
             dexscreener_url=pair.dexscreener_url,
             gecko_terminal_url=pair.gecko_terminal_url,

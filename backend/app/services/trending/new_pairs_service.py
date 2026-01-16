@@ -1,13 +1,11 @@
 """
 New Pairs Discovery Service
 
-Uses GeckoTerminal API (free) to fetch new token pairs with holder filtering.
+Focuses on MIGRATED tokens (pump.fun → PumpSwap/Raydium) which are
+the tokens that actually get discussed in Telegram chats.
 
-Filters:
-- 50+ holders
-- Launched less than 24 hours ago
-- Top 10 holders hold less than 40%
-- Optionally: Dex paid (boosted on DexScreener)
+Since March 2025, pump.fun tokens migrate to PumpSwap instead of Raydium.
+These "graduated" tokens hit ~$69k market cap and get real liquidity.
 """
 
 import httpx
@@ -15,6 +13,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import asyncio
+import re
 import structlog
 
 logger = structlog.get_logger()
@@ -24,10 +23,15 @@ _new_pairs_cache: List[Dict[str, Any]] = []
 _cache_time: Optional[datetime] = None
 CACHE_DURATION = timedelta(minutes=2)  # Refresh frequently for new pairs
 
+# pump.fun identifiers
+PUMP_FUN_SUFFIX = "pump"  # Tokens ending in "pump" are from pump.fun
+PUMPSWAP_DEX_IDS = ["pumpswap", "pump_swap", "pump-swap"]
+RAYDIUM_DEX_IDS = ["raydium", "raydium_clmm", "raydium_cp"]
+
 
 @dataclass
 class NewPairToken:
-    """A newly discovered token pair"""
+    """A newly discovered token pair (preferably migrated from pump.fun)"""
     address: str
     symbol: str
     name: str
@@ -51,6 +55,8 @@ class NewPairToken:
     age_hours: float
     dex_name: str
     is_boosted: bool  # Dex paid
+    is_pump_fun: bool  # From pump.fun (address ends in "pump")
+    is_migrated: bool  # Migrated to PumpSwap/Raydium
     
     image_url: Optional[str]
     dexscreener_url: str
@@ -77,6 +83,8 @@ class NewPairToken:
             "age_hours": self.age_hours,
             "dex_name": self.dex_name,
             "is_boosted": self.is_boosted,
+            "is_pump_fun": self.is_pump_fun,
+            "is_migrated": self.is_migrated,
             "image_url": self.image_url,
             "dexscreener_url": self.dexscreener_url,
             "gecko_terminal_url": self.gecko_terminal_url,
@@ -139,6 +147,137 @@ class NewPairsService:
             logger.warning("fetch_boosted_failed", error=str(e))
         return set()
     
+    def _is_pump_fun_token(self, address: str) -> bool:
+        """Check if token is from pump.fun (addresses end in 'pump')"""
+        return address.lower().endswith(PUMP_FUN_SUFFIX)
+    
+    def _is_migrated_dex(self, dex_id: str) -> bool:
+        """Check if DEX is PumpSwap or Raydium (migration targets)"""
+        dex_lower = dex_id.lower()
+        return any(d in dex_lower for d in PUMPSWAP_DEX_IDS + RAYDIUM_DEX_IDS)
+    
+    async def _fetch_migrated_tokens(
+        self, 
+        chains: List[str], 
+        boosted_tokens: set,
+        max_age_hours: int,
+        min_liquidity: float,
+        min_market_cap: float = 50000,  # Graduated tokens have ~$69k+ mcap
+    ) -> List[Dict[str, Any]]:
+        """Fetch newly migrated pump.fun tokens from PumpSwap/Raydium"""
+        all_pairs = []
+        client = await self._get_client()
+        
+        # Search for pump.fun tokens specifically
+        search_queries = [
+            "pump",  # Tokens with "pump" in name/address
+            "pumpswap",  # PumpSwap DEX
+        ]
+        
+        for query in search_queries:
+            try:
+                resp = await client.get(
+                    f"{self.dexscreener_url}/latest/dex/search",
+                    params={"q": query}
+                )
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = data.get("pairs", [])
+                    
+                    for pair in pairs:
+                        base_token = pair.get("baseToken", {})
+                        token_address = base_token.get("address", "")
+                        dex_id = pair.get("dexId", "")
+                        chain_id = pair.get("chainId", "")
+                        
+                        if not token_address:
+                            continue
+                        
+                        # Only Solana for pump.fun tokens
+                        if self._normalize_chain(chain_id) != "solana":
+                            continue
+                        
+                        # Check if it's a pump.fun token or on migrated DEX
+                        is_pump = self._is_pump_fun_token(token_address)
+                        is_migrated = self._is_migrated_dex(dex_id)
+                        
+                        if not (is_pump or is_migrated):
+                            continue
+                        
+                        # Parse creation time
+                        created_at = None
+                        age_hours = 12
+                        pair_created = pair.get("pairCreatedAt")
+                        if pair_created:
+                            try:
+                                created_at = datetime.fromtimestamp(pair_created / 1000)
+                                age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
+                            except:
+                                pass
+                        
+                        # Skip if too old
+                        if age_hours > max_age_hours:
+                            continue
+                        
+                        # Check liquidity (migrated tokens have real liquidity)
+                        liquidity = pair.get("liquidity", {}).get("usd", 0) or 0
+                        if liquidity < min_liquidity:
+                            continue
+                        
+                        # Check market cap (graduated = ~$69k+)
+                        market_cap = pair.get("marketCap") or pair.get("fdv") or 0
+                        if market_cap < min_market_cap:
+                            continue
+                        
+                        price_change = pair.get("priceChange", {})
+                        volume = pair.get("volume", {})
+                        
+                        all_pairs.append({
+                            "pool_address": pair.get("pairAddress", token_address),
+                            "name": base_token.get("name", "Unknown"),
+                            "base_token_address": token_address,
+                            "base_token_symbol": base_token.get("symbol", "???"),
+                            "base_token_name": base_token.get("name", "Unknown"),
+                            "price_usd": float(pair.get("priceUsd") or 0) if pair.get("priceUsd") else None,
+                            "price_change_24h": price_change.get("h24"),
+                            "price_change_1h": price_change.get("h1"),
+                            "volume_24h": float(volume.get("h24") or 0) if volume.get("h24") else None,
+                            "liquidity_usd": liquidity,
+                            "fdv_usd": market_cap,
+                            "market_cap": market_cap,
+                            "created_at": created_at,
+                            "age_hours": age_hours,
+                            "dex_name": dex_id,
+                            "chain": "solana",
+                            "is_boosted": token_address.lower() in boosted_tokens,
+                            "is_pump_fun": is_pump,
+                            "is_migrated": is_migrated,
+                            "image_url": pair.get("info", {}).get("imageUrl"),
+                        })
+                    
+                logger.info("migrated_tokens_search", query=query, found=len(all_pairs))
+                    
+            except Exception as e:
+                logger.warning("migrated_search_error", query=query, error=str(e))
+            
+            await asyncio.sleep(0.3)
+        
+        # Deduplicate by address
+        seen = set()
+        unique_pairs = []
+        for pair in all_pairs:
+            addr = pair.get("base_token_address", "").lower()
+            if addr and addr not in seen:
+                seen.add(addr)
+                unique_pairs.append(pair)
+        
+        # Sort by market cap (higher = more legitimate migrated token)
+        unique_pairs.sort(key=lambda x: x.get("market_cap", 0) or 0, reverse=True)
+        
+        logger.info("migrated_tokens_total", count=len(unique_pairs))
+        return unique_pairs
+    
     async def _fetch_from_dexscreener(
         self, 
         chains: List[str], 
@@ -147,12 +286,20 @@ class NewPairsService:
         min_liquidity: float
     ) -> List[Dict[str, Any]]:
         """Fallback: Fetch new pairs from DexScreener search"""
+        # First try to get migrated tokens (these are what Telegram discusses)
+        migrated = await self._fetch_migrated_tokens(
+            chains, boosted_tokens, max_age_hours, min_liquidity
+        )
+        
+        if migrated:
+            return migrated
+        
+        # If no migrated tokens, fall back to general search
         all_pairs = []
         client = await self._get_client()
         
         for chain in chains:
             try:
-                # DexScreener search for recent pairs
                 resp = await client.get(
                     f"{self.dexscreener_url}/latest/dex/search",
                     params={"q": f"chain:{chain}"}
@@ -169,9 +316,8 @@ class NewPairsService:
                         if not token_address:
                             continue
                         
-                        # Parse creation time if available
                         created_at = None
-                        age_hours = 12  # Default if unknown
+                        age_hours = 12
                         pair_created = pair.get("pairCreatedAt")
                         if pair_created:
                             try:
@@ -180,21 +326,20 @@ class NewPairsService:
                             except:
                                 pass
                         
-                        # Skip if too old
                         if age_hours > max_age_hours:
                             continue
                         
-                        # Check liquidity
                         liquidity = pair.get("liquidity", {}).get("usd", 0) or 0
                         if liquidity < min_liquidity:
                             continue
                         
                         price_change = pair.get("priceChange", {})
                         volume = pair.get("volume", {})
+                        market_cap = pair.get("marketCap") or pair.get("fdv") or 0
                         
                         all_pairs.append({
                             "pool_address": pair.get("pairAddress", token_address),
-                            "name": pair.get("baseToken", {}).get("name", "Unknown"),
+                            "name": base_token.get("name", "Unknown"),
                             "base_token_address": token_address,
                             "base_token_symbol": base_token.get("symbol", "???"),
                             "base_token_name": base_token.get("name", "Unknown"),
@@ -203,12 +348,15 @@ class NewPairsService:
                             "price_change_1h": price_change.get("h1"),
                             "volume_24h": float(volume.get("h24") or 0) if volume.get("h24") else None,
                             "liquidity_usd": liquidity,
-                            "fdv_usd": pair.get("fdv"),
+                            "fdv_usd": market_cap,
+                            "market_cap": market_cap,
                             "created_at": created_at,
                             "age_hours": age_hours,
                             "dex_name": pair.get("dexId", "unknown"),
                             "chain": self._normalize_chain(pair.get("chainId", chain)),
                             "is_boosted": token_address.lower() in boosted_tokens,
+                            "is_pump_fun": self._is_pump_fun_token(token_address),
+                            "is_migrated": False,
                             "image_url": pair.get("info", {}).get("imageUrl"),
                         })
                     
@@ -424,7 +572,20 @@ class NewPairsService:
         
         logger.info("pre_holder_filter", count=len(all_pairs))
         
-        # If GeckoTerminal returns nothing, try DexScreener as fallback
+        # If GeckoTerminal returns nothing or few results, try migrated tokens from DexScreener
+        # Migrated tokens (pump.fun → PumpSwap) are what Telegram actually discusses
+        if len(all_pairs) < 10:
+            logger.info("trying_migrated_tokens")
+            migrated = await self._fetch_migrated_tokens(chains, boosted_tokens, max_age_hours, min_liquidity)
+            if migrated:
+                # Add migrated tokens to the pool
+                existing_addresses = {p.get("base_token_address", "").lower() for p in all_pairs}
+                for m in migrated:
+                    if m.get("base_token_address", "").lower() not in existing_addresses:
+                        all_pairs.append(m)
+                logger.info("added_migrated_tokens", count=len(migrated))
+        
+        # If still nothing, try general DexScreener fallback
         if not all_pairs:
             logger.warning("gecko_empty_trying_dexscreener")
             all_pairs = await self._fetch_from_dexscreener(chains, boosted_tokens, max_age_hours, min_liquidity)
@@ -501,7 +662,7 @@ class NewPairsService:
                 price_change_1h=pair.get("price_change_1h"),
                 volume_24h=pair.get("volume_24h"),
                 liquidity_usd=pair.get("liquidity_usd"),
-                market_cap=pair.get("fdv_usd"),
+                market_cap=pair.get("market_cap") or pair.get("fdv_usd"),
                 holder_count=holder_count,
                 top_10_percent=top_10,
                 top_11_30_percent=top_11_30,
@@ -511,6 +672,8 @@ class NewPairsService:
                 age_hours=pair.get("age_hours", 0),
                 dex_name=pair.get("dex_name", "unknown"),
                 is_boosted=pair.get("is_boosted", False),
+                is_pump_fun=pair.get("is_pump_fun", self._is_pump_fun_token(token_address)),
+                is_migrated=pair.get("is_migrated", False),
                 image_url=pair.get("image_url") or (token_info.get("image_url") if token_info else None),
                 dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
                 gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
@@ -542,17 +705,18 @@ class NewPairsService:
                 if not token_address:
                     continue
                 
+                chain = pair.get("chain", "solana")
                 new_pair = NewPairToken(
                     address=token_address,
                     symbol=pair.get("base_token_symbol", "???"),
                     name=pair.get("base_token_name", "Unknown"),
-                    chain=pair.get("chain", "unknown"),
+                    chain=chain,
                     price_usd=pair.get("price_usd"),
                     price_change_24h=pair.get("price_change_24h"),
                     price_change_1h=pair.get("price_change_1h"),
                     volume_24h=pair.get("volume_24h"),
                     liquidity_usd=pair.get("liquidity_usd"),
-                    market_cap=pair.get("fdv_usd"),
+                    market_cap=pair.get("market_cap") or pair.get("fdv_usd"),
                     holder_count=0,  # Unknown
                     top_10_percent=50.0,  # Unknown - assume middle
                     top_11_30_percent=20.0,
@@ -562,9 +726,11 @@ class NewPairsService:
                     age_hours=pair.get("age_hours", 0),
                     dex_name=pair.get("dex_name", "unknown"),
                     is_boosted=pair.get("is_boosted", False),
+                    is_pump_fun=pair.get("is_pump_fun", self._is_pump_fun_token(token_address)),
+                    is_migrated=pair.get("is_migrated", False),
                     image_url=pair.get("image_url"),
-                    dexscreener_url=f"https://dexscreener.com/{pair.get('chain', 'solana')}/{token_address}",
-                    gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(pair.get('chain', 'solana'))}/pools/{pair.get('pool_address', token_address)}",
+                    dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
+                    gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
                 )
                 filtered_pairs.append(new_pair)
         

@@ -23,6 +23,13 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import api from "@/lib/api";
 
+interface ChatSummary {
+  chat_name: string;
+  summary: string;
+  sentiment: string;  // bullish, bearish, neutral
+  mention_count: number;
+}
+
 interface NewPairToken {
   address: string;
   symbol: string;
@@ -54,15 +61,12 @@ interface NewPairToken {
   dexscreener_url: string;
   gecko_terminal_url: string;
   
-  // Telegram mentions
-  total_mentions: number;
-  human_discussions: number;
-  top_messages: Array<{
-    text: string;
-    source_name: string;
-    timestamp: string | null;
-    sentiment: string;
-  }>;
+  // Chat analysis (NEW)
+  total_scans: number;  // Number of chats that scanned/mentioned this token
+  total_mentions: number;  // Total mentions across all chats
+  consensus_summary: string;  // What the collective chats say
+  overall_sentiment: string;  // bullish, bearish, neutral
+  chat_summaries: ChatSummary[];  // Per-chat summaries
   kol_count: number;
 }
 
@@ -215,13 +219,13 @@ function NewPairCard({ token }: { token: NewPairToken }) {
             <p className="text-[10px] text-terminal-muted">Top 10</p>
           </div>
           
-          {/* Mentions */}
+          {/* Scans (chats) */}
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 text-primary-400">
               <MessageSquare className="w-3 h-3" />
-              <span className="text-sm font-bold">{token.total_mentions}</span>
+              <span className="text-sm font-bold">{token.total_scans}</span>
             </div>
-            <p className="text-[10px] text-terminal-muted">Mentions</p>
+            <p className="text-[10px] text-terminal-muted">Chats</p>
           </div>
         </div>
 
@@ -283,29 +287,58 @@ function NewPairCard({ token }: { token: NewPairToken }) {
           </div>
         )}
 
-        {/* Top Discussion */}
+        {/* Consensus Summary */}
         <div className="p-4">
-          {token.top_messages.length > 0 ? (
-            <div className="space-y-2">
-              {token.top_messages.slice(0, 1).map((msg, i) => (
-                <div key={i} className="bg-terminal-bg/50 rounded-lg p-3">
-                  <p className="text-sm text-terminal-text leading-relaxed line-clamp-2">
-                    "{msg.text}"
-                  </p>
-                  <p className="text-xs text-terminal-muted mt-1">
-                    — {msg.source_name}
-                    {msg.timestamp && ` • ${formatDistanceToNow(new Date(msg.timestamp))} ago`}
-                  </p>
+          {token.total_scans > 0 ? (
+            <div className="space-y-3">
+              {/* Overall consensus */}
+              <div className={cn(
+                "rounded-lg p-3 border",
+                token.overall_sentiment === "bullish" ? "bg-green-500/10 border-green-500/30" :
+                token.overall_sentiment === "bearish" ? "bg-red-500/10 border-red-500/30" :
+                "bg-terminal-bg/50 border-terminal-border"
+              )}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={cn(
+                    "text-xs font-medium px-2 py-0.5 rounded",
+                    token.overall_sentiment === "bullish" ? "bg-green-500/20 text-green-400" :
+                    token.overall_sentiment === "bearish" ? "bg-red-500/20 text-red-400" :
+                    "bg-gray-500/20 text-gray-400"
+                  )}>
+                    {token.overall_sentiment.toUpperCase()}
+                  </span>
+                  <span className="text-xs text-terminal-muted">
+                    {token.total_scans} {token.total_scans === 1 ? 'chat' : 'chats'} discussing
+                  </span>
                 </div>
-              ))}
+                <p className="text-sm text-terminal-text leading-relaxed">
+                  {token.consensus_summary}
+                </p>
+              </div>
+              
+              {/* Individual chat summaries */}
+              {token.chat_summaries.length > 0 && (
+                <div className="space-y-2">
+                  {token.chat_summaries.slice(0, 2).map((chat, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs">
+                      <span className={cn(
+                        "flex-shrink-0 w-2 h-2 rounded-full mt-1.5",
+                        chat.sentiment === "bullish" ? "bg-green-400" :
+                        chat.sentiment === "bearish" ? "bg-red-400" :
+                        "bg-gray-400"
+                      )} />
+                      <div>
+                        <span className="font-medium text-terminal-text">{chat.chat_name}:</span>
+                        <span className="text-terminal-muted ml-1">{chat.summary}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ) : token.total_mentions > 0 ? (
-            <p className="text-sm text-terminal-muted italic text-center">
-              Mentioned but no discussion captured yet
-            </p>
           ) : (
             <p className="text-sm text-terminal-muted italic text-center">
-              New token - no Telegram mentions yet
+              New token - not scanned in any chats yet
             </p>
           )}
         </div>

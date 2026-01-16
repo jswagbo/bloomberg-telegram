@@ -24,6 +24,7 @@ from app.services.trending.dexscreener_trending import trending_service
 from app.services.trending.mention_scanner import mention_scanner, TokenMentionSummary
 from app.services.trending.kol_wallets import kol_wallet_service
 from app.services.trending.new_pairs_service import new_pairs_service, NewPairToken
+from app.services.trending.chat_summarizer import chat_summarizer, TokenChatAnalysis
 
 logger = structlog.get_logger()
 
@@ -109,8 +110,16 @@ class TokenDetailResponse(BaseModel):
     messages: List[dict]
 
 
+class ChatSummaryResponse(BaseModel):
+    """Summary of what one chat says about a token"""
+    chat_name: str
+    summary: str
+    sentiment: str  # bullish, bearish, neutral
+    mention_count: int
+
+
 class NewPairResponse(BaseModel):
-    """A new token pair with holder data"""
+    """A new token pair with holder data and chat analysis"""
     address: str
     symbol: str
     name: str
@@ -141,10 +150,12 @@ class NewPairResponse(BaseModel):
     dexscreener_url: str
     gecko_terminal_url: str
     
-    # Telegram mentions
-    total_mentions: int
-    human_discussions: int
-    top_messages: List[dict]
+    # Chat analysis (NEW)
+    total_scans: int  # Number of chats that scanned/mentioned this token
+    total_mentions: int  # Total mentions across all chats
+    consensus_summary: str  # What the collective chats say
+    overall_sentiment: str  # bullish, bearish, neutral
+    chat_summaries: List[ChatSummaryResponse]  # Per-chat summaries
     kol_count: int
 
 
@@ -631,64 +642,66 @@ async def get_new_pairs_feed(
     # 2. Get Telegram messages (last 72 hours)
     messages = await _get_all_messages(current_user.id, db, lookback_hours=72)
     
-    # 3. Scan messages for each new pair (including name for better matching)
-    mention_results = {}
-    for pair in new_pairs:
-        mentions = mention_scanner.scan_messages_for_token(
-            messages=messages,
-            address=pair.address,
-            symbol=pair.symbol,
-            chain=pair.chain,
-            name=pair.name,  # Include name for matching
-        )
-        mention_results[pair.address] = mentions
+    # 3. Analyze chat discussions for each token (summaries, not individual messages)
+    token_dicts = [
+        {"address": p.address, "symbol": p.symbol, "name": p.name, "chain": p.chain}
+        for p in new_pairs
+    ]
+    chat_analyses = await chat_summarizer.analyze_tokens_batch(messages, token_dicts)
     
-    # 4. Filter to only tokens WITH mentions (unless include_no_mentions is true)
-    pairs_with_mentions = []
-    pairs_without_mentions = 0
+    # 4. Filter to only tokens WITH scans (unless include_no_mentions is true)
+    pairs_with_scans = []
+    pairs_without_scans = 0
     
     for pair in new_pairs:
-        mentions = mention_results.get(pair.address)
-        if mentions and mentions.total_mentions > 0:
-            pairs_with_mentions.append(pair)
+        analysis = chat_analyses.get(pair.address)
+        if analysis and analysis.total_scans > 0:
+            pairs_with_scans.append(pair)
         else:
-            pairs_without_mentions += 1
+            pairs_without_scans += 1
             if include_no_mentions:
-                pairs_with_mentions.append(pair)
+                pairs_with_scans.append(pair)
     
     logger.info(
-        "mention_filtering",
+        "scan_filtering",
         total_pairs=len(new_pairs),
-        with_mentions=len(pairs_with_mentions) - (pairs_without_mentions if include_no_mentions else 0),
-        without_mentions=pairs_without_mentions,
-        showing=len(pairs_with_mentions),
+        with_scans=len(pairs_with_scans) - (pairs_without_scans if include_no_mentions else 0),
+        without_scans=pairs_without_scans,
+        showing=len(pairs_with_scans),
     )
     
     # 5. Check for KOL activity
     kol_results = {}
-    for pair in pairs_with_mentions:
+    for pair in pairs_with_scans:
+        analysis = chat_analyses.get(pair.address)
         token_messages = []
-        mentions = mention_results.get(pair.address)
-        if mentions:
-            token_messages = [{"text": m.text} for m in mentions.mentions]
+        if analysis:
+            # Extract all message texts for KOL check
+            for summary in analysis.chat_summaries:
+                token_messages.append({"text": summary.summary})
         
         kol_summary = await kol_wallet_service.check_kol_activity(
             pair.address, token_messages
         )
         kol_results[pair.address] = kol_summary
     
-    # 6. Build response
+    # 6. Build response with chat summaries
     response_pairs = []
     
-    for pair in pairs_with_mentions:
-        mentions = mention_results.get(pair.address)
+    for pair in pairs_with_scans:
+        analysis = chat_analyses.get(pair.address)
         kol_data = kol_results.get(pair.address)
         
-        # Get top human discussion messages
-        top_messages = []
-        if mentions:
-            human_msgs = [m for m in mentions.mentions if m.is_human_discussion]
-            top_messages = [m.to_dict() for m in human_msgs[:5]]
+        # Build chat summaries for response
+        chat_summaries = []
+        if analysis:
+            for cs in analysis.chat_summaries[:5]:  # Top 5 chats
+                chat_summaries.append(ChatSummaryResponse(
+                    chat_name=cs.chat_name,
+                    summary=cs.summary,
+                    sentiment=cs.sentiment,
+                    mention_count=cs.mention_count,
+                ))
         
         response_pairs.append(NewPairResponse(
             address=pair.address,
@@ -715,14 +728,16 @@ async def get_new_pairs_feed(
             image_url=pair.image_url,
             dexscreener_url=pair.dexscreener_url,
             gecko_terminal_url=pair.gecko_terminal_url,
-            total_mentions=mentions.total_mentions if mentions else 0,
-            human_discussions=mentions.human_discussions if mentions else 0,
-            top_messages=top_messages,
+            total_scans=analysis.total_scans if analysis else 0,
+            total_mentions=analysis.total_mentions if analysis else 0,
+            consensus_summary=analysis.consensus_summary if analysis else "No chat data.",
+            overall_sentiment=analysis.overall_sentiment if analysis else "neutral",
+            chat_summaries=chat_summaries,
             kol_count=kol_data.total_kol_holders if kol_data else 0,
         ))
     
-    # Sort by total mentions (most discussed first), then by holder count
-    response_pairs.sort(key=lambda p: (p.total_mentions, p.holder_count), reverse=True)
+    # Sort by total scans (most chats discussing first), then by holder count
+    response_pairs.sort(key=lambda p: (p.total_scans, p.holder_count), reverse=True)
     
     return NewPairsFeedResponse(
         pairs=response_pairs[:limit],

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { motion } from "framer-motion";
@@ -17,6 +17,7 @@ import {
   Flame,
   Shield,
   Zap,
+  Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -360,6 +361,8 @@ export function TrendingFeed() {
   const [chainFilter, setChainFilter] = useState<string | null>(null);
   const [minHolders, setMinHolders] = useState(25);
   const [maxTop10, setMaxTop10] = useState(50);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastScan, setLastScan] = useState<Date | null>(null);
   const queryClient = useQueryClient();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -372,20 +375,55 @@ export function TrendingFeed() {
       min_liquidity: 500,
       limit: 50,
     }),
-    staleTime: 60000,
+    staleTime: 30000,  // 30 seconds
     refetchOnWindowFocus: false,
+    refetchInterval: autoRefresh ? 60000 : false,  // Auto-refetch every 60 seconds
   });
 
   const refreshMutation = useMutation({
     mutationFn: () => api.refreshTrendingMessages(),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setLastScan(new Date());
       queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
     },
   });
 
+  // Scan Telegram messages
+  const handleScanTelegram = useCallback(async () => {
+    try {
+      await refreshMutation.mutateAsync();
+      await refetch();
+    } catch (error) {
+      console.error("Failed to scan Telegram:", error);
+    }
+  }, [refreshMutation, refetch]);
+
+  // Auto-scan Telegram every minute when autoRefresh is on
+  useEffect(() => {
+    if (!autoRefresh) return;
+    
+    // Initial scan on mount
+    const initialScan = setTimeout(() => {
+      if (!refreshMutation.isPending) {
+        handleScanTelegram();
+      }
+    }, 2000);  // Wait 2 seconds after mount
+    
+    // Then scan every minute
+    const interval = setInterval(() => {
+      if (!refreshMutation.isPending) {
+        handleScanTelegram();
+      }
+    }, 60000);  // 1 minute
+    
+    return () => {
+      clearTimeout(initialScan);
+      clearInterval(interval);
+    };
+  }, [autoRefresh, handleScanTelegram, refreshMutation.isPending]);
+
   const handleRefresh = async () => {
-    await refreshMutation.mutateAsync();
-    refetch();
+    await handleScanTelegram();
   };
 
   if (error) {
@@ -413,22 +451,58 @@ export function TrendingFeed() {
           </p>
         </div>
         
-        <button
-          onClick={handleRefresh}
-          disabled={refreshMutation.isPending || isFetching}
-          className={cn(
-            "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors",
-            refreshMutation.isPending || isFetching
-              ? "bg-terminal-border text-terminal-muted cursor-not-allowed"
-              : "bg-primary-600 hover:bg-primary-700 text-white"
-          )}
-        >
-          <RefreshCw className={cn(
-            "w-4 h-4",
-            (refreshMutation.isPending || isFetching) && "animate-spin"
-          )} />
-          {refreshMutation.isPending ? "Scanning..." : isFetching ? "Loading..." : "Refresh Mentions"}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Auto-refresh toggle */}
+          <button
+            onClick={() => setAutoRefresh(!autoRefresh)}
+            className={cn(
+              "flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors",
+              autoRefresh 
+                ? "bg-green-500/20 text-green-400 border border-green-500/30" 
+                : "bg-terminal-border text-terminal-muted"
+            )}
+            title={autoRefresh ? "Auto-scan is ON (every 1 min)" : "Auto-scan is OFF"}
+          >
+            <Radio className={cn("w-4 h-4", autoRefresh && "animate-pulse")} />
+            {autoRefresh ? "Live" : "Paused"}
+          </button>
+          
+          {/* Scan Telegram button */}
+          <button
+            onClick={handleScanTelegram}
+            disabled={refreshMutation.isPending}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors",
+              refreshMutation.isPending
+                ? "bg-terminal-border text-terminal-muted cursor-not-allowed"
+                : "bg-purple-600 hover:bg-purple-700 text-white"
+            )}
+          >
+            <MessageSquare className={cn(
+              "w-4 h-4",
+              refreshMutation.isPending && "animate-pulse"
+            )} />
+            {refreshMutation.isPending ? "Scanning..." : "Scan Telegram"}
+          </button>
+          
+          {/* Refresh feed button */}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshMutation.isPending || isFetching}
+            className={cn(
+              "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors",
+              refreshMutation.isPending || isFetching
+                ? "bg-terminal-border text-terminal-muted cursor-not-allowed"
+                : "bg-primary-600 hover:bg-primary-700 text-white"
+            )}
+          >
+              <RefreshCw className={cn(
+              "w-4 h-4",
+              (refreshMutation.isPending || isFetching) && "animate-spin"
+            )} />
+            {isFetching ? "Loading..." : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -490,6 +564,14 @@ export function TrendingFeed() {
           <span>{data.messages_scanned} Telegram messages scanned</span>
           <span>•</span>
           <span>Updated {formatDistanceToNow(new Date(data.last_updated))} ago</span>
+          {autoRefresh && (
+            <>
+              <span>•</span>
+              <span className="text-green-400 flex items-center gap-1">
+                <Radio className="w-3 h-3 animate-pulse" /> Auto-scanning
+              </span>
+            </>
+          )}
         </div>
       )}
 

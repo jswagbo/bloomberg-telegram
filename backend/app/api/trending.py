@@ -385,6 +385,8 @@ async def refresh_messages(
     """
     from app.services.telegram.client import telegram_service
     
+    logger.info("refresh_messages_start", user_id=str(current_user.id))
+    
     # Get user's telegram accounts
     result = await db.execute(
         select(TelegramAccount).where(
@@ -394,10 +396,16 @@ async def refresh_messages(
     )
     accounts = result.scalars().all()
     
+    logger.info("refresh_accounts_found", count=len(accounts))
+    
     if not accounts:
-        return {"status": "no_accounts", "messages": 0}
+        logger.warning("refresh_no_accounts", user_id=str(current_user.id))
+        return {"status": "no_accounts", "messages": 0, "accounts": 0, "sources": 0}
     
     total_messages = 0
+    total_sources = 0
+    connected_accounts = 0
+    errors = []
     
     for account in accounts:
         # Get active sources
@@ -409,11 +417,16 @@ async def refresh_messages(
         )
         sources = result.scalars().all()
         
+        logger.info("refresh_account_sources", 
+                    account=account.session_name, 
+                    sources=len(sources))
+        
         if not sources:
             continue
         
         # Connect to Telegram
         if account.session_name not in telegram_service._active_clients:
+            logger.info("refresh_connecting", account=account.session_name)
             connected = await telegram_service.connect_account(
                 session_name=account.session_name,
                 api_id_encrypted=account.api_id_encrypted,
@@ -421,11 +434,16 @@ async def refresh_messages(
                 session_string_encrypted=account.session_string_encrypted,
             )
             if not connected:
+                errors.append(f"Failed to connect account {account.session_name}")
+                logger.error("refresh_connect_failed", account=account.session_name)
                 continue
         
         client = telegram_service._active_clients.get(account.session_name)
         if not client:
+            errors.append(f"No client for {account.session_name}")
             continue
+        
+        connected_accounts += 1
         
         # Fetch messages from each source
         for source in sources:
@@ -436,11 +454,11 @@ async def refresh_messages(
                 except ValueError:
                     entity = await client.get_entity(source.telegram_id)
                 
-                messages = await client.get_messages(entity, limit=100)
+                messages = await client.get_messages(entity, limit=500)  # Fetch more messages
                 
                 # Cache messages
                 source_key = f"{current_user.id}:{source.telegram_id}"
-                _message_cache[source_key] = [
+                cached_msgs = [
                     {
                         "text": msg.text,
                         "source_name": source.name,
@@ -451,18 +469,35 @@ async def refresh_messages(
                     for msg in messages
                     if msg.text
                 ]
+                _message_cache[source_key] = cached_msgs
                 
-                total_messages += len(messages)
+                total_messages += len(cached_msgs)
+                total_sources += 1
+                
+                logger.info("refresh_source_success", 
+                            source=source.name, 
+                            messages=len(cached_msgs))
                 
             except Exception as e:
+                error_msg = f"Error in {source.name}: {str(e)}"
+                errors.append(error_msg)
                 logger.error("refresh_source_error", source=source.name, error=str(e))
     
     global _cache_time
     _cache_time = datetime.utcnow()
     
+    logger.info("refresh_complete", 
+                messages=total_messages, 
+                sources=total_sources,
+                accounts=connected_accounts,
+                errors=len(errors))
+    
     return {
-        "status": "ok",
+        "status": "ok" if total_messages > 0 else "no_messages",
         "messages": total_messages,
+        "sources": total_sources,
+        "accounts": connected_accounts,
+        "errors": errors[:5] if errors else [],  # Return first 5 errors
         "refreshed_at": _cache_time.isoformat(),
     }
 

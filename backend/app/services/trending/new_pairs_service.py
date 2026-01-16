@@ -146,15 +146,28 @@ class NewPairsService:
         pools = []
         
         try:
-            # Fetch new pools - this endpoint returns recently created pools
+            # Fetch new pools with included token data
             resp = await client.get(
                 f"{self.gecko_base_url}/networks/{network}/new_pools",
-                params={"page": 1}
+                params={"page": 1, "include": "base_token,quote_token"}
             )
             
             if resp.status_code == 200:
                 data = resp.json()
-                pools = data.get("data", [])
+                raw_pools = data.get("data", [])
+                included = data.get("included", [])
+                
+                # Build lookup for included token data
+                token_lookup = {}
+                for item in included:
+                    if item.get("type") == "token":
+                        token_lookup[item.get("id")] = item.get("attributes", {})
+                
+                # Enrich pools with token data
+                for pool in raw_pools:
+                    pool["_token_lookup"] = token_lookup
+                    pools.append(pool)
+                
                 logger.info("fetched_new_pools", chain=chain, count=len(pools))
             else:
                 logger.warning("new_pools_fetch_failed", chain=chain, status=resp.status_code)
@@ -187,10 +200,23 @@ class NewPairsService:
         """Parse pool data from GeckoTerminal"""
         try:
             attrs = pool_data.get("attributes", {})
+            relationships = pool_data.get("relationships", {})
+            token_lookup = pool_data.get("_token_lookup", {})
             
-            # Get base token info
-            base_token = attrs.get("base_token_price_usd")
-            token_address = attrs.get("address", "")
+            # Get base token info from relationships + lookup
+            base_token_ref = relationships.get("base_token", {}).get("data", {})
+            base_token_id = base_token_ref.get("id", "")
+            base_token_data = token_lookup.get(base_token_id, {})
+            
+            # Extract token address from the id (format: "network_address")
+            base_token_address = base_token_data.get("address", "")
+            if not base_token_address and "_" in base_token_id:
+                base_token_address = base_token_id.split("_", 1)[-1]
+            
+            base_token_symbol = base_token_data.get("symbol", "???")
+            base_token_name = base_token_data.get("name", "Unknown")
+            
+            pool_address = attrs.get("address", "")
             
             # Parse creation time
             created_at_str = attrs.get("pool_created_at")
@@ -204,23 +230,28 @@ class NewPairsService:
                 except:
                     pass
             
+            # Get price changes
+            price_change = attrs.get("price_change_percentage", {})
+            volume = attrs.get("volume_usd", {})
+            
             return {
-                "pool_address": token_address,
+                "pool_address": pool_address,
                 "name": attrs.get("name", "Unknown"),
-                "base_token_address": attrs.get("base_token_address", ""),
-                "base_token_symbol": attrs.get("base_token_symbol", "???"),
-                "base_token_name": attrs.get("base_token_name", "Unknown"),
+                "base_token_address": base_token_address,
+                "base_token_symbol": base_token_symbol,
+                "base_token_name": base_token_name,
                 "price_usd": float(attrs.get("base_token_price_usd") or 0) if attrs.get("base_token_price_usd") else None,
-                "price_change_24h": attrs.get("price_change_percentage", {}).get("h24"),
-                "price_change_1h": attrs.get("price_change_percentage", {}).get("h1"),
-                "volume_24h": float(attrs.get("volume_usd", {}).get("h24") or 0) if attrs.get("volume_usd", {}).get("h24") else None,
+                "price_change_24h": float(price_change.get("h24") or 0) if price_change.get("h24") else None,
+                "price_change_1h": float(price_change.get("h1") or 0) if price_change.get("h1") else None,
+                "volume_24h": float(volume.get("h24") or 0) if volume.get("h24") else None,
                 "liquidity_usd": float(attrs.get("reserve_in_usd") or 0) if attrs.get("reserve_in_usd") else None,
                 "fdv_usd": float(attrs.get("fdv_usd") or 0) if attrs.get("fdv_usd") else None,
                 "created_at": created_at,
                 "age_hours": age_hours,
                 "dex_name": attrs.get("dex_id", "unknown"),
                 "chain": chain,
-                "is_boosted": attrs.get("base_token_address", "").lower() in boosted_tokens,
+                "is_boosted": base_token_address.lower() in boosted_tokens if base_token_address else False,
+                "image_url": base_token_data.get("image_url"),
             }
             
         except Exception as e:
@@ -301,71 +332,104 @@ class NewPairsService:
         
         # Now fetch holder info for each token and filter
         filtered_pairs = []
+        skipped_no_address = 0
+        skipped_holder_count = 0
+        skipped_top_10 = 0
+        skipped_no_info = 0
         
         for pair in all_pairs[:100]:  # Limit API calls
             token_address = pair.get("base_token_address")
             chain = pair.get("chain")
             
             if not token_address:
+                skipped_no_address += 1
                 continue
             
             # Fetch holder info
             token_info = await self._fetch_token_info(chain, token_address)
             
+            # Default values if no holder info
+            holder_count = 0
+            top_10 = 50.0  # Assume 50% if unknown
+            top_11_30 = 20.0
+            top_31_50 = 15.0
+            rest = 15.0
+            
             if token_info:
-                holders = token_info.get("holders", {})
-                holder_count = holders.get("count", 0) or 0
+                holders = token_info.get("holders") or {}
+                holder_count = holders.get("count") or 0
                 
                 # Get distribution percentages
-                distribution = holders.get("distribution_percentage", {})
-                top_10 = float(distribution.get("top_10", 100) or 100)
-                top_11_30 = float(distribution.get("11_to_30", 0) or 0)
-                top_31_50 = float(distribution.get("31_to_50", 0) or 0)
-                rest = float(distribution.get("rest", 0) or 0)
+                distribution = holders.get("distribution_percentage") or {}
+                if distribution:
+                    top_10 = float(distribution.get("top_10") or 50)
+                    top_11_30 = float(distribution.get("11_to_30") or distribution.get("11_30") or 20)
+                    top_31_50 = float(distribution.get("31_to_50") or distribution.get("31_50") or 15)
+                    rest = float(distribution.get("rest") or 15)
                 
-                logger.debug(
+                logger.info(
                     "holder_info",
                     symbol=pair.get("base_token_symbol"),
                     holders=holder_count,
                     top_10=top_10
                 )
-                
-                # Apply holder filters
+            else:
+                skipped_no_info += 1
+                logger.warning("no_token_info", address=token_address[:10], chain=chain)
+            
+            # Apply holder filters (but allow if we have data)
+            if holder_count > 0:  # Only filter if we have data
                 if holder_count < min_holders:
+                    skipped_holder_count += 1
                     continue
                 
                 if top_10 > max_top_10_percent:
+                    skipped_top_10 += 1
                     continue
-                
-                # Create the token object
-                new_pair = NewPairToken(
-                    address=token_address,
-                    symbol=pair.get("base_token_symbol", "???"),
-                    name=pair.get("base_token_name", "Unknown"),
-                    chain=chain,
-                    price_usd=pair.get("price_usd"),
-                    price_change_24h=pair.get("price_change_24h"),
-                    price_change_1h=pair.get("price_change_1h"),
-                    volume_24h=pair.get("volume_24h"),
-                    liquidity_usd=pair.get("liquidity_usd"),
-                    market_cap=pair.get("fdv_usd"),
-                    holder_count=holder_count,
-                    top_10_percent=top_10,
-                    top_11_30_percent=top_11_30,
-                    top_31_50_percent=top_31_50,
-                    rest_percent=rest,
-                    pool_created_at=pair.get("created_at"),
-                    age_hours=pair.get("age_hours", 0),
-                    dex_name=pair.get("dex_name", "unknown"),
-                    is_boosted=pair.get("is_boosted", False),
-                    image_url=token_info.get("image_url"),
-                    dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
-                    gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
-                )
-                
-                filtered_pairs.append(new_pair)
+            elif holder_count == 0 and not token_info:
+                # No holder data available, include anyway if it passes other filters
+                # This ensures we still show something even if holder API fails
+                pass
+            
+            # Create the token object
+            new_pair = NewPairToken(
+                address=token_address,
+                symbol=pair.get("base_token_symbol", "???"),
+                name=pair.get("base_token_name", "Unknown"),
+                chain=chain,
+                price_usd=pair.get("price_usd"),
+                price_change_24h=pair.get("price_change_24h"),
+                price_change_1h=pair.get("price_change_1h"),
+                volume_24h=pair.get("volume_24h"),
+                liquidity_usd=pair.get("liquidity_usd"),
+                market_cap=pair.get("fdv_usd"),
+                holder_count=holder_count,
+                top_10_percent=top_10,
+                top_11_30_percent=top_11_30,
+                top_31_50_percent=top_31_50,
+                rest_percent=rest,
+                pool_created_at=pair.get("created_at"),
+                age_hours=pair.get("age_hours", 0),
+                dex_name=pair.get("dex_name", "unknown"),
+                is_boosted=pair.get("is_boosted", False),
+                image_url=pair.get("image_url") or (token_info.get("image_url") if token_info else None),
+                dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
+                gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
+            )
+            
+            filtered_pairs.append(new_pair)
             
             await asyncio.sleep(0.1)  # Rate limiting for token info calls
+        
+        logger.info(
+            "filtering_stats",
+            total=len(all_pairs),
+            skipped_no_address=skipped_no_address,
+            skipped_holder_count=skipped_holder_count,
+            skipped_top_10=skipped_top_10,
+            skipped_no_info=skipped_no_info,
+            passed=len(filtered_pairs)
+        )
         
         # Sort by holder count (more holders = more legitimate)
         filtered_pairs.sort(key=lambda x: x.holder_count, reverse=True)

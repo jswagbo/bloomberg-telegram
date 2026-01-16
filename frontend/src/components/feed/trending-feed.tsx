@@ -163,22 +163,28 @@ function NewPairCard({ token }: { token: NewPairToken }) {
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 text-bullish">
               <Users className="w-3 h-3" />
-              <span className="text-sm font-bold">{token.holder_count.toLocaleString()}</span>
+              <span className="text-sm font-bold">
+                {token.holder_count > 0 ? token.holder_count.toLocaleString() : "—"}
+              </span>
             </div>
             <p className="text-[10px] text-terminal-muted">Holders</p>
           </div>
           
-          {/* Top 10 % */}
+          {/* Top 10 % - only show if we have real data */}
           <div className="text-center">
-            <div className={cn(
-              "text-sm font-bold",
-              holderHealth === "excellent" ? "text-bullish" :
-              holderHealth === "good" ? "text-green-400" :
-              holderHealth === "fair" ? "text-yellow-400" :
-              "text-bearish"
-            )}>
-              {token.top_10_percent.toFixed(0)}%
-            </div>
+            {token.holder_count > 0 ? (
+              <div className={cn(
+                "text-sm font-bold",
+                holderHealth === "excellent" ? "text-bullish" :
+                holderHealth === "good" ? "text-green-400" :
+                holderHealth === "fair" ? "text-yellow-400" :
+                "text-bearish"
+              )}>
+                {token.top_10_percent.toFixed(0)}%
+              </div>
+            ) : (
+              <div className="text-sm font-bold text-terminal-muted">—</div>
+            )}
             <p className="text-[10px] text-terminal-muted">Top 10</p>
           </div>
           
@@ -192,42 +198,51 @@ function NewPairCard({ token }: { token: NewPairToken }) {
           </div>
         </div>
 
-        {/* Holder Distribution Bar */}
-        <div className="px-4 py-2 border-b border-terminal-border">
-          <div className="flex items-center gap-2 mb-1">
-            <Shield className={cn(
-              "w-3 h-3",
-              holderHealth === "excellent" || holderHealth === "good" ? "text-bullish" : "text-yellow-400"
-            )} />
-            <span className="text-xs text-terminal-muted">Holder Distribution</span>
+        {/* Holder Distribution Bar - only show if we have data */}
+        {token.holder_count > 0 ? (
+          <div className="px-4 py-2 border-b border-terminal-border">
+            <div className="flex items-center gap-2 mb-1">
+              <Shield className={cn(
+                "w-3 h-3",
+                holderHealth === "excellent" || holderHealth === "good" ? "text-bullish" : "text-yellow-400"
+              )} />
+              <span className="text-xs text-terminal-muted">Holder Distribution</span>
+            </div>
+            <div className="h-2 rounded-full overflow-hidden flex bg-terminal-border">
+              <div 
+                className="bg-bearish" 
+                style={{ width: `${token.top_10_percent}%` }}
+                title={`Top 10: ${token.top_10_percent.toFixed(1)}%`}
+              />
+              <div 
+                className="bg-yellow-500" 
+                style={{ width: `${token.top_11_30_percent}%` }}
+                title={`Top 11-30: ${token.top_11_30_percent.toFixed(1)}%`}
+              />
+              <div 
+                className="bg-primary-500" 
+                style={{ width: `${token.top_31_50_percent}%` }}
+                title={`Top 31-50: ${token.top_31_50_percent.toFixed(1)}%`}
+              />
+              <div 
+                className="bg-bullish" 
+                style={{ width: `${token.rest_percent}%` }}
+                title={`Rest: ${token.rest_percent.toFixed(1)}%`}
+              />
+            </div>
+            <div className="flex justify-between text-[10px] text-terminal-muted mt-1">
+              <span>Top 10: {token.top_10_percent.toFixed(0)}%</span>
+              <span>Others: {token.rest_percent.toFixed(0)}%</span>
+            </div>
           </div>
-          <div className="h-2 rounded-full overflow-hidden flex bg-terminal-border">
-            <div 
-              className="bg-bearish" 
-              style={{ width: `${token.top_10_percent}%` }}
-              title={`Top 10: ${token.top_10_percent.toFixed(1)}%`}
-            />
-            <div 
-              className="bg-yellow-500" 
-              style={{ width: `${token.top_11_30_percent}%` }}
-              title={`Top 11-30: ${token.top_11_30_percent.toFixed(1)}%`}
-            />
-            <div 
-              className="bg-primary-500" 
-              style={{ width: `${token.top_31_50_percent}%` }}
-              title={`Top 31-50: ${token.top_31_50_percent.toFixed(1)}%`}
-            />
-            <div 
-              className="bg-bullish" 
-              style={{ width: `${token.rest_percent}%` }}
-              title={`Rest: ${token.rest_percent.toFixed(1)}%`}
-            />
+        ) : (
+          <div className="px-4 py-2 border-b border-terminal-border">
+            <div className="flex items-center gap-2">
+              <Shield className="w-3 h-3 text-terminal-muted" />
+              <span className="text-xs text-terminal-muted">Holder data pending (token too new)</span>
+            </div>
           </div>
-          <div className="flex justify-between text-[10px] text-terminal-muted mt-1">
-            <span>Top 10: {token.top_10_percent.toFixed(0)}%</span>
-            <span>Others: {token.rest_percent.toFixed(0)}%</span>
-          </div>
-        </div>
+        )}
 
         {/* KOL Mentions */}
         {token.kol_count > 0 && (

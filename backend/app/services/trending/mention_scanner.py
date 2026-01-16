@@ -3,15 +3,59 @@ Mention Scanner
 
 Searches Telegram messages for mentions of specific tokens.
 Extracts human discussion (not bot/scan messages).
+
+Searches for:
+- Full contract address
+- Truncated address (first/last 6 chars)
+- $TICKER format
+- TICKER as word
+- Common misspellings
 """
 
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import structlog
 
 logger = structlog.get_logger()
+
+# Common misspelling patterns for crypto tickers
+MISSPELLING_RULES = [
+    # Double letters
+    lambda s: [s[:i] + s[i] + s[i:] for i in range(len(s))],
+    # Swap adjacent letters
+    lambda s: [s[:i] + s[i+1] + s[i] + s[i+2:] for i in range(len(s)-1)],
+    # Drop a letter
+    lambda s: [s[:i] + s[i+1:] for i in range(len(s))],
+    # Common substitutions
+    lambda s: [s.replace('o', '0'), s.replace('O', '0'),
+               s.replace('i', '1'), s.replace('I', '1'),
+               s.replace('e', '3'), s.replace('E', '3'),
+               s.replace('a', '4'), s.replace('A', '4'),
+               s.replace('s', '$'), s.replace('S', '$')],
+]
+
+
+def generate_misspellings(symbol: str, max_variants: int = 15) -> Set[str]:
+    """Generate common misspellings of a ticker symbol"""
+    variants = {symbol.lower()}
+    
+    if len(symbol) < 3:
+        return variants  # Too short to misspell
+    
+    for rule in MISSPELLING_RULES:
+        try:
+            new_variants = rule(symbol.lower())
+            for v in new_variants:
+                if v and v != symbol.lower() and len(v) >= 2:
+                    variants.add(v)
+                    if len(variants) >= max_variants:
+                        return variants
+        except:
+            pass
+    
+    return variants
 
 
 @dataclass
@@ -170,30 +214,59 @@ class MentionScanner:
         text: str,
         address: str,
         symbol: str,
+        name: str = "",
     ) -> bool:
-        """Check if a message mentions a specific token"""
+        """
+        Check if a message mentions a specific token.
+        
+        Searches for:
+        - Full contract address
+        - Truncated address (first/last 6-8 chars)
+        - $TICKER format
+        - TICKER as word
+        - Token name
+        - Common misspellings
+        """
         text_lower = text.lower()
         
-        # Check for contract address (case-insensitive for some, exact for others)
+        # 1. Check for full contract address
         if address.lower() in text_lower:
             return True
         
-        # Check for first/last 6 chars of address (common truncation)
+        # 2. Check for truncated address (common in chats)
         if len(address) > 12:
-            if address[:6].lower() in text_lower or address[-6:].lower() in text_lower:
-                return True
+            # First 6-8 chars
+            for length in [8, 6]:
+                if address[:length].lower() in text_lower:
+                    return True
+                if address[-length:].lower() in text_lower:
+                    return True
         
-        # Check for $SYMBOL
+        # 3. Check for $SYMBOL (most common format)
         symbol_pattern = rf'\${re.escape(symbol)}\b'
         if re.search(symbol_pattern, text, re.IGNORECASE):
             return True
         
-        # Check for just SYMBOL (but be careful with short symbols)
-        if len(symbol) >= 3:
-            # Word boundary check
+        # 4. Check for SYMBOL as word boundary
+        if len(symbol) >= 2:
             symbol_word_pattern = rf'\b{re.escape(symbol)}\b'
             if re.search(symbol_word_pattern, text, re.IGNORECASE):
                 return True
+        
+        # 5. Check for token name (if provided and long enough)
+        if name and len(name) >= 4:
+            name_pattern = rf'\b{re.escape(name)}\b'
+            if re.search(name_pattern, text, re.IGNORECASE):
+                return True
+        
+        # 6. Check for common misspellings of ticker
+        if len(symbol) >= 3:
+            misspellings = generate_misspellings(symbol)
+            for variant in misspellings:
+                if len(variant) >= 3:
+                    variant_pattern = rf'\b{re.escape(variant)}\b'
+                    if re.search(variant_pattern, text_lower):
+                        return True
         
         return False
     
@@ -203,6 +276,7 @@ class MentionScanner:
         address: str,
         symbol: str,
         chain: str,
+        name: str = "",
     ) -> TokenMentionSummary:
         """
         Scan a list of messages for mentions of a specific token.
@@ -212,6 +286,7 @@ class MentionScanner:
             address: Token contract address
             symbol: Token symbol
             chain: Blockchain
+            name: Token name (optional)
         
         Returns:
             TokenMentionSummary with all mentions
@@ -227,8 +302,8 @@ class MentionScanner:
             if not text:
                 continue
             
-            # Check if message mentions this token
-            if not self._message_mentions_token(text, address, symbol):
+            # Check if message mentions this token (including name and misspellings)
+            if not self._message_mentions_token(text, address, symbol, name):
                 continue
             
             # Found a mention!

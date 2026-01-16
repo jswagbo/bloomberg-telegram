@@ -47,6 +47,7 @@ interface NewPairToken {
   is_boosted: boolean;
   is_pump_fun: boolean;  // From pump.fun
   is_migrated: boolean;  // Migrated to PumpSwap/Raydium
+  launchpad: string;  // "pump.fun", "bags.fm", "bonk", or ""
   
   image_url: string | null;
   dexscreener_url: string;
@@ -129,12 +130,19 @@ function NewPairCard({ token }: { token: NewPairToken }) {
                 )}>
                   {token.chain}
                 </span>
-                {token.is_pump_fun && (
-                  <span className="text-xs px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-400">
-                    pump.fun
+                {/* Launchpad badge */}
+                {token.launchpad && (
+                  <span className={cn(
+                    "text-xs px-1.5 py-0.5 rounded",
+                    token.launchpad === "pump.fun" ? "bg-pink-500/20 text-pink-400" :
+                    token.launchpad === "bags.fm" ? "bg-orange-500/20 text-orange-400" :
+                    token.launchpad === "bonk" ? "bg-amber-500/20 text-amber-400" :
+                    "bg-gray-500/20 text-gray-400"
+                  )}>
+                    {token.launchpad}
                   </span>
                 )}
-                {token.is_migrated && (
+                {token.is_migrated && !token.launchpad && (
                   <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">
                     Migrated
                   </span>
@@ -350,18 +358,18 @@ function NewPairCard({ token }: { token: NewPairToken }) {
 
 export function TrendingFeed() {
   const [chainFilter, setChainFilter] = useState<string | null>(null);
-  const [minHolders, setMinHolders] = useState(50);
-  const [maxTop10, setMaxTop10] = useState(40);
+  const [minHolders, setMinHolders] = useState(25);
+  const [maxTop10, setMaxTop10] = useState(50);
   const queryClient = useQueryClient();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["new-pairs-feed", chainFilter, minHolders, maxTop10],
     queryFn: () => api.getNewPairsFeed({
-      chain: chainFilter || undefined,
+      chain: chainFilter || "solana",  // Default to Solana for launchpad tokens
       min_holders: minHolders,
       max_top_10_percent: maxTop10,
-      max_age_hours: 24,
-      min_liquidity: 1000,
+      max_age_hours: 72,  // 72 hours of messages
+      min_liquidity: 500,
       limit: 50,
     }),
     staleTime: 60000,
@@ -399,9 +407,9 @@ export function TrendingFeed() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold">Migrated Tokens (pump.fun → DEX)</h2>
+          <h2 className="text-xl font-bold">Migrated Tokens with Telegram Buzz</h2>
           <p className="text-sm text-terminal-muted">
-            Graduated tokens with $50K+ market cap • Recently migrated to PumpSwap/Raydium
+            pump.fun • bags.fm • bonk → Only showing tokens mentioned in your Telegram chats
           </p>
         </div>
         
@@ -494,25 +502,30 @@ export function TrendingFeed() {
         </div>
       ) : data?.pairs?.length === 0 ? (
         <div className="text-center py-12 bg-terminal-card border border-terminal-border rounded-xl">
-          <Users className="w-12 h-12 text-terminal-muted mx-auto mb-4" />
-          <h3 className="font-semibold mb-2">No New Pairs Found</h3>
-          <p className="text-sm text-terminal-muted mb-4">
-            No tokens match your filters. Try adjusting the criteria.
+          <MessageSquare className="w-12 h-12 text-terminal-muted mx-auto mb-4" />
+          <h3 className="font-semibold mb-2">No Tokens with Telegram Buzz</h3>
+          <p className="text-sm text-terminal-muted mb-4 max-w-md mx-auto">
+            No migrated tokens have been mentioned in your Telegram chats (last 72 hours).
+            Make sure you have Telegram sources connected and hit Refresh.
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             <button
-              onClick={() => setMinHolders(25)}
+              onClick={() => refetch()}
+              className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-500 flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh Feed
+            </button>
+            <a
+              href="/settings"
               className="px-3 py-1.5 bg-terminal-border rounded-lg text-sm hover:bg-terminal-border/80"
             >
-              Lower holder requirement
-            </button>
-            <button
-              onClick={() => setMaxTop10(50)}
-              className="px-3 py-1.5 bg-terminal-border rounded-lg text-sm hover:bg-terminal-border/80"
-            >
-              Increase top 10 max
-            </button>
+              Connect Telegram
+            </a>
           </div>
+          <p className="text-xs text-terminal-muted mt-4">
+            {data?.messages_scanned || 0} messages scanned • Looking for pump.fun, bags.fm, bonk tokens
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

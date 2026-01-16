@@ -23,10 +23,19 @@ _new_pairs_cache: List[Dict[str, Any]] = []
 _cache_time: Optional[datetime] = None
 CACHE_DURATION = timedelta(minutes=2)  # Refresh frequently for new pairs
 
-# pump.fun identifiers
+# Launchpad identifiers
 PUMP_FUN_SUFFIX = "pump"  # Tokens ending in "pump" are from pump.fun
 PUMPSWAP_DEX_IDS = ["pumpswap", "pump_swap", "pump-swap"]
 RAYDIUM_DEX_IDS = ["raydium", "raydium_clmm", "raydium_cp"]
+
+# bags.fm (formerly believe) - another Solana launchpad
+BAGS_FM_IDENTIFIERS = ["bags", "believe", "bags.fm"]
+
+# bonkbot / bonk launchpad
+BONK_IDENTIFIERS = ["bonk", "bonkbot", "letsbonk"]
+
+# All migrated DEXes
+MIGRATED_DEX_IDS = PUMPSWAP_DEX_IDS + RAYDIUM_DEX_IDS + ["orca", "meteora"]
 
 
 @dataclass
@@ -57,6 +66,7 @@ class NewPairToken:
     is_boosted: bool  # Dex paid
     is_pump_fun: bool  # From pump.fun (address ends in "pump")
     is_migrated: bool  # Migrated to PumpSwap/Raydium
+    launchpad: str  # "pump.fun", "bags.fm", "bonk", or ""
     
     image_url: Optional[str]
     dexscreener_url: str
@@ -85,6 +95,7 @@ class NewPairToken:
             "is_boosted": self.is_boosted,
             "is_pump_fun": self.is_pump_fun,
             "is_migrated": self.is_migrated,
+            "launchpad": self.launchpad,
             "image_url": self.image_url,
             "dexscreener_url": self.dexscreener_url,
             "gecko_terminal_url": self.gecko_terminal_url,
@@ -151,10 +162,42 @@ class NewPairsService:
         """Check if token is from pump.fun (addresses end in 'pump')"""
         return address.lower().endswith(PUMP_FUN_SUFFIX)
     
+    def _is_bags_fm_token(self, name: str, symbol: str, dex_id: str) -> bool:
+        """Check if token is from bags.fm launchpad"""
+        name_lower = (name or "").lower()
+        symbol_lower = (symbol or "").lower()
+        dex_lower = (dex_id or "").lower()
+        
+        for identifier in BAGS_FM_IDENTIFIERS:
+            if identifier in name_lower or identifier in symbol_lower or identifier in dex_lower:
+                return True
+        return False
+    
+    def _is_bonk_token(self, name: str, symbol: str, dex_id: str) -> bool:
+        """Check if token is from bonk launchpad"""
+        name_lower = (name or "").lower()
+        symbol_lower = (symbol or "").lower()
+        dex_lower = (dex_id or "").lower()
+        
+        for identifier in BONK_IDENTIFIERS:
+            if identifier in name_lower or identifier in symbol_lower or identifier in dex_lower:
+                return True
+        return False
+    
     def _is_migrated_dex(self, dex_id: str) -> bool:
-        """Check if DEX is PumpSwap or Raydium (migration targets)"""
-        dex_lower = dex_id.lower()
-        return any(d in dex_lower for d in PUMPSWAP_DEX_IDS + RAYDIUM_DEX_IDS)
+        """Check if DEX is a migration target (PumpSwap, Raydium, Orca, Meteora)"""
+        dex_lower = (dex_id or "").lower()
+        return any(d in dex_lower for d in MIGRATED_DEX_IDS)
+    
+    def _get_launchpad(self, address: str, name: str, symbol: str, dex_id: str) -> str:
+        """Determine which launchpad a token came from"""
+        if self._is_pump_fun_token(address):
+            return "pump.fun"
+        if self._is_bags_fm_token(name, symbol, dex_id):
+            return "bags.fm"
+        if self._is_bonk_token(name, symbol, dex_id):
+            return "bonk"
+        return ""
     
     async def _fetch_migrated_tokens(
         self, 
@@ -162,16 +205,21 @@ class NewPairsService:
         boosted_tokens: set,
         max_age_hours: int,
         min_liquidity: float,
-        min_market_cap: float = 50000,  # Graduated tokens have ~$69k+ mcap
+        min_market_cap: float = 30000,  # Lower threshold to catch more tokens
     ) -> List[Dict[str, Any]]:
-        """Fetch newly migrated pump.fun tokens from PumpSwap/Raydium"""
+        """Fetch newly migrated tokens from pump.fun, bags.fm, bonk"""
         all_pairs = []
         client = await self._get_client()
         
-        # Search for pump.fun tokens specifically
+        # Search for tokens from all launchpads
         search_queries = [
-            "pump",  # Tokens with "pump" in name/address
+            "pump",  # pump.fun tokens
             "pumpswap",  # PumpSwap DEX
+            "raydium",  # Raydium (old migration target)
+            "bags",  # bags.fm
+            "believe",  # bags.fm (old name)
+            "bonk",  # bonk launchpad
+            "meteora",  # Another popular Solana DEX
         ]
         
         for query in search_queries:
@@ -198,11 +246,18 @@ class NewPairsService:
                         if self._normalize_chain(chain_id) != "solana":
                             continue
                         
-                        # Check if it's a pump.fun token or on migrated DEX
-                        is_pump = self._is_pump_fun_token(token_address)
-                        is_migrated = self._is_migrated_dex(dex_id)
+                        # Check if it's from a launchpad or on migrated DEX
+                        token_name = base_token.get("name", "")
+                        token_symbol = base_token.get("symbol", "")
                         
-                        if not (is_pump or is_migrated):
+                        is_pump = self._is_pump_fun_token(token_address)
+                        is_bags = self._is_bags_fm_token(token_name, token_symbol, dex_id)
+                        is_bonk = self._is_bonk_token(token_name, token_symbol, dex_id)
+                        is_migrated = self._is_migrated_dex(dex_id)
+                        launchpad = self._get_launchpad(token_address, token_name, token_symbol, dex_id)
+                        
+                        # Include if from any launchpad OR on a migrated DEX
+                        if not (is_pump or is_bags or is_bonk or is_migrated):
                             continue
                         
                         # Parse creation time
@@ -235,10 +290,10 @@ class NewPairsService:
                         
                         all_pairs.append({
                             "pool_address": pair.get("pairAddress", token_address),
-                            "name": base_token.get("name", "Unknown"),
+                            "name": token_name or "Unknown",
                             "base_token_address": token_address,
-                            "base_token_symbol": base_token.get("symbol", "???"),
-                            "base_token_name": base_token.get("name", "Unknown"),
+                            "base_token_symbol": token_symbol or "???",
+                            "base_token_name": token_name or "Unknown",
                             "price_usd": float(pair.get("priceUsd") or 0) if pair.get("priceUsd") else None,
                             "price_change_24h": price_change.get("h24"),
                             "price_change_1h": price_change.get("h1"),
@@ -253,6 +308,7 @@ class NewPairsService:
                             "is_boosted": token_address.lower() in boosted_tokens,
                             "is_pump_fun": is_pump,
                             "is_migrated": is_migrated,
+                            "launchpad": launchpad,
                             "image_url": pair.get("info", {}).get("imageUrl"),
                         })
                     
@@ -652,10 +708,16 @@ class NewPairsService:
                 pass
             
             # Create the token object
+            # Determine launchpad
+            token_name = pair.get("base_token_name", "")
+            token_symbol = pair.get("base_token_symbol", "")
+            dex_name = pair.get("dex_name", "")
+            launchpad = pair.get("launchpad") or self._get_launchpad(token_address, token_name, token_symbol, dex_name)
+            
             new_pair = NewPairToken(
                 address=token_address,
-                symbol=pair.get("base_token_symbol", "???"),
-                name=pair.get("base_token_name", "Unknown"),
+                symbol=token_symbol or "???",
+                name=token_name or "Unknown",
                 chain=chain,
                 price_usd=pair.get("price_usd"),
                 price_change_24h=pair.get("price_change_24h"),
@@ -670,10 +732,11 @@ class NewPairsService:
                 rest_percent=rest,
                 pool_created_at=pair.get("created_at"),
                 age_hours=pair.get("age_hours", 0),
-                dex_name=pair.get("dex_name", "unknown"),
+                dex_name=dex_name or "unknown",
                 is_boosted=pair.get("is_boosted", False),
                 is_pump_fun=pair.get("is_pump_fun", self._is_pump_fun_token(token_address)),
                 is_migrated=pair.get("is_migrated", False),
+                launchpad=launchpad,
                 image_url=pair.get("image_url") or (token_info.get("image_url") if token_info else None),
                 dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
                 gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
@@ -706,10 +769,15 @@ class NewPairsService:
                     continue
                 
                 chain = pair.get("chain", "solana")
+                token_name = pair.get("base_token_name", "")
+                token_symbol = pair.get("base_token_symbol", "")
+                dex_name = pair.get("dex_name", "")
+                launchpad = pair.get("launchpad") or self._get_launchpad(token_address, token_name, token_symbol, dex_name)
+                
                 new_pair = NewPairToken(
                     address=token_address,
-                    symbol=pair.get("base_token_symbol", "???"),
-                    name=pair.get("base_token_name", "Unknown"),
+                    symbol=token_symbol or "???",
+                    name=token_name or "Unknown",
                     chain=chain,
                     price_usd=pair.get("price_usd"),
                     price_change_24h=pair.get("price_change_24h"),
@@ -724,10 +792,11 @@ class NewPairsService:
                     rest_percent=15.0,
                     pool_created_at=pair.get("created_at"),
                     age_hours=pair.get("age_hours", 0),
-                    dex_name=pair.get("dex_name", "unknown"),
+                    dex_name=dex_name or "unknown",
                     is_boosted=pair.get("is_boosted", False),
                     is_pump_fun=pair.get("is_pump_fun", self._is_pump_fun_token(token_address)),
                     is_migrated=pair.get("is_migrated", False),
+                    launchpad=launchpad,
                     image_url=pair.get("image_url"),
                     dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
                     gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",

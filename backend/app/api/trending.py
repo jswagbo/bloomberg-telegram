@@ -135,6 +135,7 @@ class NewPairResponse(BaseModel):
     is_boosted: bool
     is_pump_fun: bool  # From pump.fun
     is_migrated: bool  # Migrated to PumpSwap/Raydium
+    launchpad: str  # "pump.fun", "bags.fm", "bonk", or ""
     
     image_url: Optional[str]
     dexscreener_url: str
@@ -466,8 +467,24 @@ async def refresh_messages(
     }
 
 
-async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
-    """Get all cached messages for a user's sources"""
+async def _get_all_messages(
+    user_id: str, 
+    db: AsyncSession, 
+    lookback_hours: int = 72
+) -> List[dict]:
+    """
+    Get all cached messages for a user's sources.
+    
+    Args:
+        user_id: The user's ID
+        db: Database session
+        lookback_hours: Only include messages from the last N hours (default 72)
+    
+    Returns:
+        List of message dictionaries
+    """
+    from datetime import timedelta, timezone
+    
     # Get user's sources
     result = await db.execute(
         select(TelegramAccount).where(
@@ -478,6 +495,7 @@ async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
     accounts = result.scalars().all()
     
     all_messages = []
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     
     for account in accounts:
         result = await db.execute(
@@ -491,7 +509,25 @@ async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
         for source in sources:
             source_key = f"{user_id}:{source.telegram_id}"
             if source_key in _message_cache:
-                all_messages.extend(_message_cache[source_key])
+                # Filter by time
+                for msg in _message_cache[source_key]:
+                    ts_str = msg.get("timestamp")
+                    if ts_str:
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                            if ts.tzinfo is None:
+                                ts = ts.replace(tzinfo=timezone.utc)
+                            if ts >= cutoff_time:
+                                all_messages.append(msg)
+                        except:
+                            all_messages.append(msg)  # Include if can't parse
+                    else:
+                        all_messages.append(msg)  # Include if no timestamp
+    
+    logger.info("messages_retrieved", 
+                total=len(all_messages), 
+                lookback_hours=lookback_hours,
+                accounts=len(accounts))
     
     return all_messages
 
@@ -502,12 +538,13 @@ async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
 
 @router.get("/new-pairs", response_model=NewPairsFeedResponse)
 async def get_new_pairs_feed(
-    min_holders: int = Query(50, ge=1, description="Minimum number of holders"),
-    max_top_10_percent: float = Query(40.0, ge=0, le=100, description="Max % held by top 10 wallets"),
-    max_age_hours: int = Query(24, ge=1, le=168, description="Max age in hours"),
+    min_holders: int = Query(25, ge=1, description="Minimum number of holders"),
+    max_top_10_percent: float = Query(50.0, ge=0, le=100, description="Max % held by top 10 wallets"),
+    max_age_hours: int = Query(72, ge=1, le=168, description="Max age in hours"),
     require_boosted: bool = Query(False, description="Only show dex-paid tokens"),
-    min_liquidity: float = Query(1000, ge=0, description="Minimum liquidity in USD"),
+    min_liquidity: float = Query(500, ge=0, description="Minimum liquidity in USD"),
     chain: Optional[str] = Query(None, description="Filter by chain"),
+    include_no_mentions: bool = Query(False, description="Include tokens with no Telegram mentions"),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -515,20 +552,22 @@ async def get_new_pairs_feed(
     """
     Get new token pairs with advanced filtering.
     
-    This uses GeckoTerminal API for:
-    - New pools (launched in last 24h)
-    - Holder counts and distribution
+    Focuses on MIGRATED tokens from pump.fun, bags.fm, bonk.
+    
+    ONLY shows tokens that have been mentioned in Telegram (unless include_no_mentions=true).
+    Searches for: address, ticker, name, and common misspellings.
+    Looks back 72 hours in Telegram messages.
     
     Filters:
-    - min_holders: Minimum 50 holders (default)
-    - max_top_10_percent: Top 10 wallets hold less than 40% (default)
-    - max_age_hours: Launched in last 24 hours (default)
+    - min_holders: Minimum 25 holders (default)
+    - max_top_10_percent: Top 10 wallets hold less than 50% (default)
+    - max_age_hours: Launched in last 72 hours (default)
     - require_boosted: Only dex-paid tokens (optional)
-    - min_liquidity: Minimum $1000 liquidity (default)
+    - min_liquidity: Minimum $500 liquidity (default)
     """
-    chains = [chain] if chain else ["solana", "base", "bsc"]
+    chains = [chain] if chain else ["solana"]  # Focus on Solana for launchpad tokens
     
-    # 1. Get new pairs from GeckoTerminal with holder filtering
+    # 1. Get new pairs (migrated from launchpads)
     new_pairs = await new_pairs_service.get_new_pairs(
         chains=chains,
         min_holders=min_holders,
@@ -536,7 +575,7 @@ async def get_new_pairs_feed(
         max_age_hours=max_age_hours,
         require_boosted=require_boosted,
         min_liquidity=min_liquidity,
-        limit=limit,
+        limit=limit * 2,  # Fetch more since we'll filter by mentions
     )
     
     if not new_pairs:
@@ -554,22 +593,48 @@ async def get_new_pairs_feed(
             messages_scanned=0,
         )
     
-    # 2. Get Telegram messages and scan for mentions
-    messages = await _get_all_messages(current_user.id, db)
+    # 2. Get Telegram messages (last 72 hours)
+    messages = await _get_all_messages(current_user.id, db, lookback_hours=72)
     
-    # 3. Scan messages for each new pair
-    token_dicts = [
-        {"address": p.address, "symbol": p.symbol, "chain": p.chain}
-        for p in new_pairs
-    ]
-    mention_results = mention_scanner.scan_messages_for_tokens(messages, token_dicts)
-    
-    # 4. Check for KOL activity
-    kol_results = {}
+    # 3. Scan messages for each new pair (including name for better matching)
+    mention_results = {}
     for pair in new_pairs:
+        mentions = mention_scanner.scan_messages_for_token(
+            messages=messages,
+            address=pair.address,
+            symbol=pair.symbol,
+            chain=pair.chain,
+            name=pair.name,  # Include name for matching
+        )
+        mention_results[pair.address] = mentions
+    
+    # 4. Filter to only tokens WITH mentions (unless include_no_mentions is true)
+    pairs_with_mentions = []
+    pairs_without_mentions = 0
+    
+    for pair in new_pairs:
+        mentions = mention_results.get(pair.address)
+        if mentions and mentions.total_mentions > 0:
+            pairs_with_mentions.append(pair)
+        else:
+            pairs_without_mentions += 1
+            if include_no_mentions:
+                pairs_with_mentions.append(pair)
+    
+    logger.info(
+        "mention_filtering",
+        total_pairs=len(new_pairs),
+        with_mentions=len(pairs_with_mentions) - (pairs_without_mentions if include_no_mentions else 0),
+        without_mentions=pairs_without_mentions,
+        showing=len(pairs_with_mentions),
+    )
+    
+    # 5. Check for KOL activity
+    kol_results = {}
+    for pair in pairs_with_mentions:
         token_messages = []
-        if pair.address in mention_results:
-            mentions = mention_results[pair.address]
+        mentions = mention_results.get(pair.address)
+        if mentions:
             token_messages = [{"text": m.text} for m in mentions.mentions]
         
         kol_summary = await kol_wallet_service.check_kol_activity(
@@ -577,10 +642,10 @@ async def get_new_pairs_feed(
         )
         kol_results[pair.address] = kol_summary
     
-    # 5. Build response
+    # 6. Build response
     response_pairs = []
     
-    for pair in new_pairs:
+    for pair in pairs_with_mentions:
         mentions = mention_results.get(pair.address)
         kol_data = kol_results.get(pair.address)
         
@@ -588,7 +653,7 @@ async def get_new_pairs_feed(
         top_messages = []
         if mentions:
             human_msgs = [m for m in mentions.mentions if m.is_human_discussion]
-            top_messages = [m.to_dict() for m in human_msgs[:3]]
+            top_messages = [m.to_dict() for m in human_msgs[:5]]
         
         response_pairs.append(NewPairResponse(
             address=pair.address,
@@ -611,6 +676,7 @@ async def get_new_pairs_feed(
             is_boosted=pair.is_boosted,
             is_pump_fun=pair.is_pump_fun,
             is_migrated=pair.is_migrated,
+            launchpad=pair.launchpad,
             image_url=pair.image_url,
             dexscreener_url=pair.dexscreener_url,
             gecko_terminal_url=pair.gecko_terminal_url,
@@ -620,11 +686,11 @@ async def get_new_pairs_feed(
             kol_count=kol_data.total_kol_holders if kol_data else 0,
         ))
     
-    # Sort by holder count (more holders = more legitimate)
-    response_pairs.sort(key=lambda p: p.holder_count, reverse=True)
+    # Sort by total mentions (most discussed first), then by holder count
+    response_pairs.sort(key=lambda p: (p.total_mentions, p.holder_count), reverse=True)
     
     return NewPairsFeedResponse(
-        pairs=response_pairs,
+        pairs=response_pairs[:limit],
         total_pairs=len(response_pairs),
         filters_applied={
             "min_holders": min_holders,
@@ -632,6 +698,7 @@ async def get_new_pairs_feed(
             "max_age_hours": max_age_hours,
             "require_boosted": require_boosted,
             "min_liquidity": min_liquidity,
+            "include_no_mentions": include_no_mentions,
         },
         last_updated=datetime.utcnow().isoformat(),
         messages_scanned=len(messages),

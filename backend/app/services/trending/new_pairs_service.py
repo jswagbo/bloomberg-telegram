@@ -139,6 +139,88 @@ class NewPairsService:
             logger.warning("fetch_boosted_failed", error=str(e))
         return set()
     
+    async def _fetch_from_dexscreener(
+        self, 
+        chains: List[str], 
+        boosted_tokens: set,
+        max_age_hours: int,
+        min_liquidity: float
+    ) -> List[Dict[str, Any]]:
+        """Fallback: Fetch new pairs from DexScreener search"""
+        all_pairs = []
+        client = await self._get_client()
+        
+        for chain in chains:
+            try:
+                # DexScreener search for recent pairs
+                resp = await client.get(
+                    f"{self.dexscreener_url}/latest/dex/search",
+                    params={"q": f"chain:{chain}"}
+                )
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pairs = data.get("pairs", [])[:30]
+                    
+                    for pair in pairs:
+                        base_token = pair.get("baseToken", {})
+                        token_address = base_token.get("address", "")
+                        
+                        if not token_address:
+                            continue
+                        
+                        # Parse creation time if available
+                        created_at = None
+                        age_hours = 12  # Default if unknown
+                        pair_created = pair.get("pairCreatedAt")
+                        if pair_created:
+                            try:
+                                created_at = datetime.fromtimestamp(pair_created / 1000)
+                                age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
+                            except:
+                                pass
+                        
+                        # Skip if too old
+                        if age_hours > max_age_hours:
+                            continue
+                        
+                        # Check liquidity
+                        liquidity = pair.get("liquidity", {}).get("usd", 0) or 0
+                        if liquidity < min_liquidity:
+                            continue
+                        
+                        price_change = pair.get("priceChange", {})
+                        volume = pair.get("volume", {})
+                        
+                        all_pairs.append({
+                            "pool_address": pair.get("pairAddress", token_address),
+                            "name": pair.get("baseToken", {}).get("name", "Unknown"),
+                            "base_token_address": token_address,
+                            "base_token_symbol": base_token.get("symbol", "???"),
+                            "base_token_name": base_token.get("name", "Unknown"),
+                            "price_usd": float(pair.get("priceUsd") or 0) if pair.get("priceUsd") else None,
+                            "price_change_24h": price_change.get("h24"),
+                            "price_change_1h": price_change.get("h1"),
+                            "volume_24h": float(volume.get("h24") or 0) if volume.get("h24") else None,
+                            "liquidity_usd": liquidity,
+                            "fdv_usd": pair.get("fdv"),
+                            "created_at": created_at,
+                            "age_hours": age_hours,
+                            "dex_name": pair.get("dexId", "unknown"),
+                            "chain": self._normalize_chain(pair.get("chainId", chain)),
+                            "is_boosted": token_address.lower() in boosted_tokens,
+                            "image_url": pair.get("info", {}).get("imageUrl"),
+                        })
+                    
+                    logger.info("dexscreener_fallback", chain=chain, pairs=len(all_pairs))
+                    
+            except Exception as e:
+                logger.warning("dexscreener_fallback_error", chain=chain, error=str(e))
+            
+            await asyncio.sleep(0.2)
+        
+        return all_pairs
+    
     async def _fetch_new_pools(self, chain: str) -> List[Dict[str, Any]]:
         """Fetch new pools from GeckoTerminal"""
         client = await self._get_client()
@@ -314,9 +396,10 @@ class NewPairsService:
         
         all_pairs = []
         
-        # Fetch new pools from each chain
+        # Fetch new pools from each chain using GeckoTerminal
         for chain in chains:
             pools = await self._fetch_new_pools(chain)
+            logger.info("gecko_pools_raw", chain=chain, count=len(pools))
             
             for pool in pools:
                 parsed = self._parse_pool(pool, chain, boosted_tokens)
@@ -340,6 +423,11 @@ class NewPairsService:
             await asyncio.sleep(0.2)  # Rate limiting
         
         logger.info("pre_holder_filter", count=len(all_pairs))
+        
+        # If GeckoTerminal returns nothing, try DexScreener as fallback
+        if not all_pairs:
+            logger.warning("gecko_empty_trying_dexscreener")
+            all_pairs = await self._fetch_from_dexscreener(chains, boosted_tokens, max_age_hours, min_liquidity)
         
         # Now fetch holder info for each token and filter
         filtered_pairs = []

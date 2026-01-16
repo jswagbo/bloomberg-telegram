@@ -383,7 +383,6 @@ class ClusteringService:
             return True
         
         # Skip messages that are mostly hex/base58 (addresses)
-        # If >30% of the text is uppercase letters mixed with numbers, likely an address
         alphanumeric = sum(1 for c in text if c.isalnum())
         if alphanumeric > 0:
             uppercase_nums = sum(1 for c in text if c.isupper() or c.isdigit())
@@ -399,10 +398,8 @@ class ClusteringService:
     def _get_best_discussion_message(self, cluster: ClusterData) -> Dict[str, Any]:
         """
         Find the best message to show as the 'top signal'.
-        ONLY returns actual discussion/opinion messages, NEVER scan/bot messages.
-        Token mentions are only for tracking - the displayed chatter must be human discussion.
+        Prioritizes extracted opinions over raw messages.
         """
-        # ONLY use context messages (surrounding discussion) - never the token mention itself
         candidates = []
         
         for ctx in cluster.context_messages:
@@ -412,45 +409,61 @@ class ClusteringService:
             if self._is_scan_or_bot_message(text):
                 continue
             
-            # Score based on content quality
-            score = len(text)
+            # Base score from length
+            score = min(len(text), 200)  # Cap length contribution
             
-            # Strong bonus for opinion/discussion indicators
-            opinion_words = [
-                # Analysis words
-                "bullish", "bearish", "looks", "think", "feel", "imo", "imho",
-                "might", "could", "should", "probably", "maybe", "seems",
-                # Action words
-                "ape", "aped", "buying", "selling", "holding", "sold", "bought",
-                "entry", "exit", "target", "stop", "dip", "rip",
-                # Quality indicators  
-                "dev", "team", "community", "based", "legit", "solid", "gem",
-                "alpha", "early", "narrative", "catalyst",
-                # Market terms
-                "whale", "volume", "chart", "pump", "dump", "moon", "floor",
-                "mcap", "market cap", "liquidity", "supply",
-                # Sentiment
-                "love", "hate", "excited", "worried", "confident", "risky",
-                "profit", "loss", "gains", "bags",
-            ]
-            for word in opinion_words:
-                if word in text.lower():
+            # MAJOR bonus if this came from opinion extraction
+            opinion_type = ctx.get("opinion_type")
+            if opinion_type:
+                score += 100  # Extracted opinions are much more valuable
+                
+                # Extra bonus for specific opinion types
+                if opinion_type in ["price_prediction", "entry_signal", "exit_signal"]:
+                    score += 50
+                elif opinion_type in ["catalyst", "warning"]:
                     score += 40
+                elif opinion_type in ["social_proof", "whale_activity"]:
+                    score += 30
             
-            # Extra bonus for clear sentiment
+            # Bonus for key claim extraction
+            if ctx.get("key_claim"):
+                score += 40
+            
+            # Bonus for price target
+            if ctx.get("price_target"):
+                score += 30
+            
+            # Bonus for confidence
+            confidence = ctx.get("confidence", 0)
+            if confidence:
+                score += confidence * 50
+            
+            # Opinion word bonuses (for non-extracted messages)
+            if not opinion_type:
+                opinion_words = [
+                    "bullish", "bearish", "looks", "think", "feel", "imo",
+                    "ape", "buying", "selling", "holding", "entry", "target",
+                    "dev", "team", "community", "based", "legit", "solid", "gem",
+                    "whale", "volume", "chart", "pump", "moon",
+                    "excited", "worried", "confident", "risky", "profit",
+                ]
+                for word in opinion_words:
+                    if word in text.lower():
+                        score += 25
+            
+            # Sentiment bonus
             if ctx.get("sentiment") in ["bullish", "bearish"]:
-                score += 25
+                score += 20
             
-            # Bonus for proper sentence structure (has periods, commas)
-            if "." in text or "," in text:
-                score += 15
-            
-            if score > 50:  # Minimum threshold
+            if score > 50:
                 candidates.append({
                     "text": text,
                     "source": ctx.get("source_name", ""),
                     "score": score,
                     "sentiment": ctx.get("sentiment", "neutral"),
+                    "opinion_type": opinion_type,
+                    "key_claim": ctx.get("key_claim"),
+                    "price_target": ctx.get("price_target"),
                 })
         
         # Sort by score and return best
@@ -463,21 +476,96 @@ class ClusteringService:
                 "source": source,
                 "is_discussion": True,
                 "sentiment": best["sentiment"],
+                "opinion_type": best.get("opinion_type"),
+                "key_claim": best.get("key_claim"),
+                "price_target": best.get("price_target"),
             }
         
-        # No good discussion found - return empty rather than showing a scan message
-        # The frontend will handle this gracefully
         return {
             "text": "",
             "source": list(cluster.source_names)[0] if cluster.source_names else "Unknown",
             "is_discussion": False,
             "sentiment": "neutral",
         }
+    
+    def get_aggregated_insights(self, cluster: ClusterData) -> Dict[str, Any]:
+        """
+        Aggregate all opinions for a token into synthesized insights.
+        Returns a summary of what people are saying.
+        """
+        insights = {
+            "total_opinions": 0,
+            "opinion_types": {},
+            "key_claims": [],
+            "price_targets": [],
+            "bullish_reasons": [],
+            "bearish_reasons": [],
+            "catalysts": [],
+            "warnings": [],
+        }
+        
+        for ctx in cluster.context_messages:
+            opinion_type = ctx.get("opinion_type")
+            if not opinion_type:
+                continue
+            
+            insights["total_opinions"] += 1
+            
+            # Count opinion types
+            insights["opinion_types"][opinion_type] = insights["opinion_types"].get(opinion_type, 0) + 1
+            
+            # Collect key claims
+            if ctx.get("key_claim"):
+                insights["key_claims"].append({
+                    "claim": ctx["key_claim"],
+                    "source": ctx.get("source_name", "Unknown"),
+                    "sentiment": ctx.get("sentiment", "neutral"),
+                })
+            
+            # Collect price targets
+            if ctx.get("price_target"):
+                insights["price_targets"].append(ctx["price_target"])
+            
+            # Categorize by sentiment
+            text = ctx.get("text", "")[:200]
+            sentiment = ctx.get("sentiment", "neutral")
+            
+            if sentiment == "bullish":
+                insights["bullish_reasons"].append({
+                    "text": text,
+                    "source": ctx.get("source_name", ""),
+                    "type": opinion_type,
+                })
+            elif sentiment == "bearish":
+                insights["bearish_reasons"].append({
+                    "text": text,
+                    "source": ctx.get("source_name", ""),
+                    "type": opinion_type,
+                })
+            
+            # Collect catalysts and warnings
+            if opinion_type == "catalyst":
+                insights["catalysts"].append(text)
+            elif opinion_type == "warning":
+                insights["warnings"].append(text)
+        
+        # Deduplicate and limit
+        insights["key_claims"] = insights["key_claims"][:5]
+        insights["bullish_reasons"] = insights["bullish_reasons"][:5]
+        insights["bearish_reasons"] = insights["bearish_reasons"][:5]
+        insights["catalysts"] = list(set(insights["catalysts"]))[:3]
+        insights["warnings"] = list(set(insights["warnings"]))[:3]
+        insights["price_targets"] = list(set(insights["price_targets"]))[:3]
+        
+        return insights
 
     def to_dict(self, cluster: ClusterData) -> Dict[str, Any]:
         """Convert cluster to dictionary for API response"""
         # Get the best discussion message
         top_signal = self._get_best_discussion_message(cluster)
+        
+        # Get aggregated insights from all opinions
+        insights = self.get_aggregated_insights(cluster)
         
         return {
             "id": cluster.id,
@@ -496,6 +584,7 @@ class ClusteringService:
                 "total_mentions": cluster.total_mentions,
                 "unique_wallets": len(cluster.wallet_addresses),
                 "mentions_per_minute": cluster.mentions_per_minute,
+                "total_opinions": insights["total_opinions"],
             },
             "scores": {
                 "urgency": cluster.urgency_score,
@@ -509,10 +598,11 @@ class ClusteringService:
                 "neutral": cluster.sentiment_neutral,
             },
             "sources": list(cluster.source_names),
-            "wallets": list(cluster.wallet_addresses)[:10],  # Limit for API
-            "top_messages": cluster.messages[-5:],  # Last 5 messages
-            "context_messages": cluster.context_messages[-10:],  # Discussion context
+            "wallets": list(cluster.wallet_addresses)[:10],
+            "top_messages": cluster.messages[-5:],
+            "context_messages": cluster.context_messages[-10:],
             "top_signal": top_signal,  # Best discussion message
+            "insights": insights,  # Aggregated opinions/insights
             "price": {
                 "at_first_mention": cluster.price_at_first_mention,
                 "current": cluster.price_current,

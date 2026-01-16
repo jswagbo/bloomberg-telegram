@@ -467,6 +467,7 @@ class IngestRequest(BaseModel):
 
 class IngestResponse(BaseModel):
     messages_processed: int
+    opinions_found: int
     tokens_found: int
     clusters_updated: int
 
@@ -480,15 +481,20 @@ async def ingest_messages(
 ):
     """
     Fetch and process recent messages from all active sources.
-    This is a manual trigger for message ingestion.
     
-    Now captures CONTEXT around token mentions - the actual discussion,
-    not just the scan/bot messages.
+    OPINION-FIRST APPROACH:
+    1. Scan ALL messages for opinions/insights (not just ones with token addresses)
+    2. Figure out which token each opinion is about (context, nearby mentions, etc.)
+    3. Cluster opinions by token to synthesize insights
+    
+    This captures way more alpha because people often discuss tokens without
+    explicitly mentioning contract addresses.
     """
     from app.services.telegram.client import telegram_service
     from app.services.extraction.extractor import extraction_service
+    from app.services.extraction.opinion_extractor import opinion_extractor
+    from app.services.extraction.token_resolver import token_resolver
     from app.services.clustering.cluster_service import clustering_service
-    from telethon.tl.types import Channel, Chat
     
     # Get account and verify ownership
     result = await db.execute(
@@ -542,9 +548,9 @@ async def ingest_messages(
         )
     
     messages_processed = 0
+    opinions_found = 0
     tokens_found = 0
     clusters_updated = set()
-    context_window = 5  # Number of messages before/after to capture as context
     
     # Process each source
     for source in sources:
@@ -568,17 +574,38 @@ async def ingest_messages(
             
             # Fetch recent messages
             messages = await client.get_messages(entity, limit=request.limit)
-            messages_list = list(messages)  # Convert to list for indexing
+            messages_list = list(messages)
             
-            # First pass: identify messages with tokens and their positions
-            token_message_indices = []
-            processed_messages = {}
-            
-            for i, msg in enumerate(messages_list):
+            # ============================================================
+            # PHASE 1: Extract ALL opinions from messages
+            # ============================================================
+            all_messages_data = []
+            for msg in messages_list:
                 if not msg.text:
                     continue
                 
-                # Process message
+                all_messages_data.append({
+                    "text": msg.text,
+                    "source_id": source.telegram_id,
+                    "source_name": source.name,
+                    "message_id": msg.id,
+                    "timestamp": msg.date.isoformat() if msg.date else None,
+                })
+                messages_processed += 1
+            
+            # Extract opinions (regardless of token mention)
+            opinions = opinion_extractor.extract_opinions_batch(all_messages_data)
+            opinions_found += len(opinions)
+            
+            # ============================================================
+            # PHASE 2: Also extract token addresses for context
+            # (We still need these to resolve which token opinions are about)
+            # ============================================================
+            token_messages = []
+            for msg in messages_list:
+                if not msg.text:
+                    continue
+                
                 processed = extraction_service.process_message(
                     message_id=f"{source.telegram_id}_{msg.id}",
                     source_id=source.telegram_id,
@@ -588,67 +615,91 @@ async def ingest_messages(
                     default_chain=chain,
                 )
                 
-                processed_messages[i] = processed
-                messages_processed += 1
-                
                 if processed.tokens:
                     tokens_found += len(processed.tokens)
-                    token_message_indices.append(i)
+                    token_messages.append({
+                        "message_id": msg.id,
+                        "tokens": processed.tokens,
+                        "text": msg.text,
+                        "source_id": source.telegram_id,
+                        "timestamp": msg.date.isoformat() if msg.date else None,
+                    })
             
-            # Second pass: for each token mention, gather surrounding context
-            for token_idx in token_message_indices:
-                token_msg = processed_messages[token_idx]
+            # ============================================================
+            # PHASE 3: Resolve which token each opinion is about
+            # ============================================================
+            resolved_opinions = token_resolver.resolve_tokens_batch(
+                opinions=opinions,
+                all_messages=all_messages_data + token_messages,
+            )
+            
+            # ============================================================
+            # PHASE 4: Cluster opinions by token
+            # ============================================================
+            for opinion, token_ref in resolved_opinions:
+                if not token_ref:
+                    # Couldn't determine which token - skip
+                    continue
                 
-                # Gather context messages (before and after)
-                context_texts = []
+                # Create a processed message dict for clustering
+                # The opinion IS the discussion content - no need to look for context
+                processed_dict = {
+                    "id": f"{source.telegram_id}_{opinion.message_id}",
+                    "source_id": source.telegram_id,
+                    "source_name": source.name,
+                    "timestamp": opinion.timestamp,
+                    "tokens": [{
+                        "address": token_ref.address,
+                        "symbol": token_ref.symbol,
+                        "chain": token_ref.chain,
+                    }],
+                    "wallets": [],
+                    "sentiment": opinion.sentiment,
+                    "original_text": opinion.text,
+                    # The opinion text IS the valuable content
+                    "context_messages": [{
+                        "text": opinion.text,
+                        "sentiment": opinion.sentiment,
+                        "source_name": source.name,
+                        "opinion_type": opinion.opinion_type.value,
+                        "key_claim": opinion.key_claim,
+                        "price_target": opinion.price_target,
+                        "confidence": opinion.confidence,
+                    }],
+                }
                 
-                # Look at messages around the token mention
-                # Note: Telegram messages are in reverse chronological order (newest first)
-                # So "before" (earlier messages) are at higher indices
-                for offset in range(-context_window, context_window + 1):
-                    ctx_idx = token_idx + offset
-                    if ctx_idx < 0 or ctx_idx >= len(messages_list) or ctx_idx == token_idx:
-                        continue
-                    
-                    ctx_msg = messages_list[ctx_idx]
-                    if ctx_msg.text and len(ctx_msg.text) > 10:
-                        # Check if this is a meaningful message (not just a contract address)
-                        text = ctx_msg.text.strip()
-                        
-                        # Skip if it's just a contract address or URL
-                        if len(text) < 50 and (
-                            text.startswith("0x") or 
-                            "pump.fun" in text.lower() or
-                            text.startswith("http")
-                        ):
-                            continue
-                        
-                        # Get processed version if available, or create simple version
-                        if ctx_idx in processed_messages:
-                            ctx_processed = processed_messages[ctx_idx]
-                            context_texts.append({
-                                "text": ctx_processed.original_text,
-                                "sentiment": ctx_processed.sentiment,
-                                "timestamp": ctx_processed.timestamp.isoformat() if ctx_processed.timestamp else None,
-                            })
-                        else:
-                            context_texts.append({
+                updated = clustering_service.process_messages([processed_dict])
+                for cluster in updated:
+                    clusters_updated.add(cluster.id)
+            
+            # Also still process direct token mentions (for tracking)
+            for token_msg in token_messages:
+                # Find context around this token mention
+                msg_id = token_msg["message_id"]
+                context = []
+                
+                for other_msg in all_messages_data:
+                    other_id = other_msg.get("message_id", 0)
+                    if abs(other_id - msg_id) <= 5 and other_id != msg_id:
+                        text = other_msg.get("text", "")
+                        # Skip scan-like messages
+                        if len(text) > 25 and "pump.fun" not in text.lower() and not text.startswith("http"):
+                            context.append({
                                 "text": text[:500],
                                 "sentiment": "neutral",
-                                "timestamp": ctx_msg.date.isoformat() if ctx_msg.date else None,
+                                "source_name": source.name,
                             })
                 
-                # Create the cluster message with context
                 processed_dict = {
-                    "id": token_msg.id,
-                    "source_id": token_msg.source_id,
-                    "source_name": token_msg.source_name,
-                    "timestamp": token_msg.timestamp,
-                    "tokens": token_msg.tokens,
-                    "wallets": token_msg.wallets,
-                    "sentiment": token_msg.sentiment,
-                    "original_text": token_msg.original_text,
-                    "context_messages": context_texts,  # NEW: surrounding discussion
+                    "id": f"{source.telegram_id}_{msg_id}",
+                    "source_id": source.telegram_id,
+                    "source_name": source.name,
+                    "timestamp": token_msg.get("timestamp"),
+                    "tokens": token_msg["tokens"],
+                    "wallets": [],
+                    "sentiment": "neutral",
+                    "original_text": token_msg.get("text", ""),
+                    "context_messages": context,
                 }
                 
                 updated = clustering_service.process_messages([processed_dict])
@@ -664,6 +715,7 @@ async def ingest_messages(
     
     return IngestResponse(
         messages_processed=messages_processed,
+        opinions_found=opinions_found,
         tokens_found=tokens_found,
         clusters_updated=len(clusters_updated),
     )

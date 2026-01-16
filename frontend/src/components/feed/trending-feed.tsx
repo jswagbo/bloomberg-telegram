@@ -613,7 +613,7 @@ export function TrendingFeed() {
           <span>•</span>
           <span>{data.messages_scanned} Telegram messages scanned</span>
           <span>•</span>
-          <span>Updated {formatDistanceToNow(new Date(data.last_updated))} ago</span>
+          <span>Updated {lastScan ? formatDistanceToNow(lastScan) + ' ago' : formatDistanceToNow(new Date(data.last_updated)) + ' ago'}</span>
           {autoRefresh && (
             <>
               <span>•</span>

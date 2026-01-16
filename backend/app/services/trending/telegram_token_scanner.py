@@ -92,12 +92,91 @@ class TelegramTokenScanner:
         self._client: Optional[httpx.AsyncClient] = None
         self._token_cache: Dict[str, Dict] = {}  # address -> DexScreener data
         self._cache_time: Dict[str, datetime] = {}
+        self._trending_tokens: List[Dict] = []  # Cached trending tokens for name/symbol search
+        self._trending_cache_time: Optional[datetime] = None
         self.cache_duration = timedelta(minutes=5)
     
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
+    
+    async def _get_trending_tokens(self) -> List[Dict]:
+        """Fetch trending tokens from DexScreener for name/symbol matching"""
+        # Check cache
+        if (self._trending_cache_time and 
+            datetime.utcnow() - self._trending_cache_time < self.cache_duration and
+            self._trending_tokens):
+            return self._trending_tokens
+        
+        try:
+            client = await self._get_client()
+            
+            # Get trending from DexScreener
+            response = await client.get(
+                "https://api.dexscreener.com/token-boosts/top/v1",
+                params={"chainId": "solana"}
+            )
+            
+            tokens = []
+            if response.status_code == 200:
+                data = response.json()
+                for item in data[:100]:  # Top 100 trending
+                    tokens.append({
+                        "address": item.get("tokenAddress", ""),
+                        "symbol": item.get("symbol", ""),
+                        "name": item.get("name", ""),
+                        "chain": item.get("chainId", "solana"),
+                    })
+            
+            # Also get new pairs
+            response2 = await client.get(
+                "https://api.dexscreener.com/latest/dex/pairs/solana",
+                params={"sort": "pairCreatedAt", "order": "desc"}
+            )
+            
+            if response2.status_code == 200:
+                data2 = response2.json()
+                for pair in data2.get("pairs", [])[:50]:
+                    base = pair.get("baseToken", {})
+                    tokens.append({
+                        "address": base.get("address", ""),
+                        "symbol": base.get("symbol", ""),
+                        "name": base.get("name", ""),
+                        "chain": pair.get("chainId", "solana"),
+                    })
+            
+            self._trending_tokens = tokens
+            self._trending_cache_time = datetime.utcnow()
+            logger.info("trending_tokens_fetched", count=len(tokens))
+            return tokens
+            
+        except Exception as e:
+            logger.warning("trending_tokens_fetch_failed", error=str(e))
+            return self._trending_tokens or []
+    
+    def _message_mentions_token(self, text: str, symbol: str, name: str) -> bool:
+        """Check if message mentions a token by symbol or name"""
+        text_lower = text.lower()
+        
+        # Check $SYMBOL (with dollar sign)
+        if symbol and len(symbol) >= 2:
+            if re.search(rf'\${re.escape(symbol)}\b', text, re.IGNORECASE):
+                return True
+            # Check SYMBOL as standalone word (for symbols 3+ chars to avoid false positives)
+            if len(symbol) >= 3:
+                if re.search(rf'\b{re.escape(symbol)}\b', text, re.IGNORECASE):
+                    return True
+        
+        # Check name (4+ chars to avoid false positives)
+        if name and len(name) >= 4:
+            # Avoid common words
+            common_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'from', 'they', 'will', 'what', 'when', 'make', 'like', 'time', 'just', 'know', 'take', 'come', 'could', 'good', 'some', 'them', 'than', 'then', 'look', 'only', 'over', 'such', 'with', 'into', 'year', 'your', 'well', 'back', 'even', 'also', 'after', 'want', 'give', 'most', 'test', 'open', 'work', 'coin', 'token', 'pump', 'base'}
+            if name.lower() not in common_words:
+                if re.search(rf'\b{re.escape(name)}\b', text, re.IGNORECASE):
+                    return True
+        
+        return False
     
     def _detect_chain(self, address: str) -> str:
         """Detect blockchain from address format"""
@@ -278,6 +357,11 @@ class TelegramTokenScanner:
         """
         Scan messages for tokens and enrich with market data.
         
+        Searches for:
+        1. Contract addresses (full and in links)
+        2. Token symbols ($SYMBOL)
+        3. Token names (for trending tokens)
+        
         Args:
             messages: List of message dicts
             min_mentions: Minimum mentions to include
@@ -286,8 +370,74 @@ class TelegramTokenScanner:
         Returns:
             List of FoundToken sorted by mention count
         """
-        # Scan for tokens
+        # 1. Scan for token addresses in messages
         found_tokens = self.scan_messages(messages)
+        
+        # 2. Also scan for trending token names/symbols
+        trending = await self._get_trending_tokens()
+        
+        for token_info in trending:
+            address = token_info.get("address", "")
+            symbol = token_info.get("symbol", "")
+            name = token_info.get("name", "")
+            chain = token_info.get("chain", "solana")
+            
+            if not address:
+                continue
+            
+            address_lower = address.lower()
+            
+            # Check each message for name/symbol mentions
+            for msg in messages:
+                text = msg.get("text", "")
+                if not text:
+                    continue
+                
+                # Skip if we already found this token by address
+                if address_lower in found_tokens:
+                    # Still count the name/symbol mention
+                    if self._message_mentions_token(text, symbol, name):
+                        found_tokens[address_lower].mention_count += 1
+                        found_tokens[address_lower].chats.add(msg.get("source_name", "Unknown"))
+                    continue
+                
+                # Check if message mentions this token by name/symbol
+                if self._message_mentions_token(text, symbol, name):
+                    source_name = msg.get("source_name", "Unknown")
+                    timestamp_str = msg.get("timestamp")
+                    
+                    try:
+                        timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if timestamp_str else datetime.utcnow()
+                        if timestamp.tzinfo:
+                            timestamp = timestamp.replace(tzinfo=None)
+                    except:
+                        timestamp = datetime.utcnow()
+                    
+                    clean_text = text[:200] + "..." if len(text) > 200 else text
+                    
+                    if address_lower in found_tokens:
+                        # Update existing
+                        found_tokens[address_lower].mention_count += 1
+                        found_tokens[address_lower].chats.add(source_name)
+                        if len(found_tokens[address_lower].sample_messages) < 5:
+                            found_tokens[address_lower].sample_messages.append(clean_text)
+                    else:
+                        # New token found by name/symbol
+                        found_tokens[address_lower] = FoundToken(
+                            address=address,
+                            chain=chain,
+                            mention_count=1,
+                            chats={source_name},
+                            first_seen=timestamp,
+                            last_seen=timestamp,
+                            sample_messages=[clean_text],
+                            symbol=symbol,
+                            name=name,
+                        )
+        
+        logger.info("tokens_after_name_scan", 
+                    total=len(found_tokens),
+                    trending_checked=len(trending))
         
         # Filter by min mentions
         filtered = [t for t in found_tokens.values() if t.mention_count >= min_mentions]

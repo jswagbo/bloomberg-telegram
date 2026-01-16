@@ -1,0 +1,349 @@
+"""
+Trending API - DexScreener trending coins + Telegram mentions
+
+This is the main feed endpoint. Only shows coins that are:
+1. Trending on DexScreener (top 100)
+2. Cross-referenced with what Telegram chats are saying about them
+"""
+
+from typing import List, Optional
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+import structlog
+
+from app.core.database import get_db
+from app.api.deps import get_current_user
+from app.models.user import User
+from app.models.telegram import TelegramAccount, TelegramSource
+from app.services.trending.dexscreener_trending import trending_service
+from app.services.trending.mention_scanner import mention_scanner, TokenMentionSummary
+
+logger = structlog.get_logger()
+
+router = APIRouter()
+
+
+class TrendingTokenResponse(BaseModel):
+    """A trending token with mention data"""
+    # Token info (from DexScreener)
+    address: str
+    symbol: str
+    name: str
+    chain: str
+    price_usd: Optional[float]
+    price_change_24h: Optional[float]
+    volume_24h: Optional[float]
+    market_cap: Optional[float]
+    liquidity: Optional[float]
+    image_url: Optional[str]
+    dexscreener_url: str
+    
+    # Mention data (from Telegram)
+    total_mentions: int
+    human_discussions: int
+    sources: List[str]
+    sentiment: dict
+    
+    # Top discussion messages (human only)
+    top_messages: List[dict]
+
+
+class TrendingFeedResponse(BaseModel):
+    """Response for the trending feed"""
+    tokens: List[TrendingTokenResponse]
+    total_tokens: int
+    last_updated: str
+    messages_scanned: int
+
+
+class TokenDetailResponse(BaseModel):
+    """Detailed view of a token with all mentions"""
+    # Token info
+    address: str
+    symbol: str
+    name: str
+    chain: str
+    price_usd: Optional[float]
+    price_change_24h: Optional[float]
+    volume_24h: Optional[float]
+    market_cap: Optional[float]
+    dexscreener_url: str
+    
+    # Mention data
+    total_mentions: int
+    human_discussions: int
+    sources: List[str]
+    sentiment: dict
+    
+    # All human discussion messages
+    messages: List[dict]
+
+
+# In-memory message cache (per source)
+_message_cache: dict = {}
+_cache_time: Optional[datetime] = None
+
+
+@router.get("/feed", response_model=TrendingFeedResponse)
+async def get_trending_feed(
+    limit: int = Query(50, ge=1, le=100),
+    chain: Optional[str] = Query(None, description="Filter by chain"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get trending tokens feed.
+    
+    Returns top trending tokens from DexScreener, cross-referenced with
+    what Telegram chats are saying about them.
+    """
+    global _message_cache, _cache_time
+    
+    # 1. Get trending tokens from DexScreener
+    chains = [chain] if chain else ["solana", "base", "bsc"]
+    trending_tokens = await trending_service.get_trending_tokens(
+        chains=chains,
+        limit=limit,
+    )
+    
+    if not trending_tokens:
+        return TrendingFeedResponse(
+            tokens=[],
+            total_tokens=0,
+            last_updated=datetime.utcnow().isoformat(),
+            messages_scanned=0,
+        )
+    
+    # 2. Get all messages from Telegram sources
+    messages = await _get_all_messages(current_user.id, db)
+    
+    # 3. Scan messages for each trending token
+    token_dicts = [
+        {"address": t.address, "symbol": t.symbol, "chain": t.chain}
+        for t in trending_tokens
+    ]
+    mention_results = mention_scanner.scan_messages_for_tokens(messages, token_dicts)
+    
+    # 4. Build response
+    response_tokens = []
+    for token in trending_tokens:
+        mentions = mention_results.get(token.address)
+        
+        # Get top human discussion messages
+        top_messages = []
+        if mentions:
+            human_msgs = [m for m in mentions.mentions if m.is_human_discussion]
+            top_messages = [m.to_dict() for m in human_msgs[:3]]
+        
+        response_tokens.append(TrendingTokenResponse(
+            address=token.address,
+            symbol=token.symbol,
+            name=token.name,
+            chain=token.chain,
+            price_usd=token.price_usd,
+            price_change_24h=token.price_change_24h,
+            volume_24h=token.volume_24h,
+            market_cap=token.market_cap,
+            liquidity=token.liquidity,
+            image_url=token.image_url,
+            dexscreener_url=token.dexscreener_url,
+            total_mentions=mentions.total_mentions if mentions else 0,
+            human_discussions=mentions.human_discussions if mentions else 0,
+            sources=mentions.sources if mentions else [],
+            sentiment=mentions.to_dict()["sentiment"] if mentions else {"bullish": 0, "bearish": 0, "neutral": 0},
+            top_messages=top_messages,
+        ))
+    
+    # Sort by mentions (tokens being discussed first)
+    response_tokens.sort(key=lambda t: t.human_discussions, reverse=True)
+    
+    return TrendingFeedResponse(
+        tokens=response_tokens,
+        total_tokens=len(response_tokens),
+        last_updated=datetime.utcnow().isoformat(),
+        messages_scanned=len(messages),
+    )
+
+
+@router.get("/token/{chain}/{address}", response_model=TokenDetailResponse)
+async def get_token_detail(
+    chain: str,
+    address: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get detailed view of a specific token.
+    
+    Shows:
+    - Token info from DexScreener
+    - Total mentions count
+    - All human discussion messages
+    - "No mentions" if not discussed
+    """
+    # 1. Get token info from DexScreener
+    token = await trending_service.get_token_info(address, chain)
+    
+    if not token:
+        # Create basic token info if not found
+        token_symbol = "???"
+        token_name = "Unknown Token"
+    else:
+        token_symbol = token.symbol
+        token_name = token.name
+    
+    # 2. Get all messages and scan for this token
+    messages = await _get_all_messages(current_user.id, db)
+    mentions = mention_scanner.scan_messages_for_token(
+        messages=messages,
+        address=address,
+        symbol=token_symbol if token else "",
+        chain=chain,
+    )
+    
+    # 3. Get only human discussion messages
+    human_messages = [m.to_dict() for m in mentions.mentions if m.is_human_discussion]
+    
+    return TokenDetailResponse(
+        address=address,
+        symbol=token.symbol if token else token_symbol,
+        name=token.name if token else token_name,
+        chain=chain,
+        price_usd=token.price_usd if token else None,
+        price_change_24h=token.price_change_24h if token else None,
+        volume_24h=token.volume_24h if token else None,
+        market_cap=token.market_cap if token else None,
+        dexscreener_url=token.dexscreener_url if token else f"https://dexscreener.com/{chain}/{address}",
+        total_mentions=mentions.total_mentions,
+        human_discussions=mentions.human_discussions,
+        sources=mentions.sources,
+        sentiment=mentions.to_dict()["sentiment"],
+        messages=human_messages,
+    )
+
+
+@router.post("/refresh")
+async def refresh_messages(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Refresh Telegram messages cache.
+    Fetches latest messages from all active sources.
+    """
+    from app.services.telegram.client import telegram_service
+    
+    # Get user's telegram accounts
+    result = await db.execute(
+        select(TelegramAccount).where(
+            TelegramAccount.user_id == current_user.id,
+            TelegramAccount.is_active == True,
+        )
+    )
+    accounts = result.scalars().all()
+    
+    if not accounts:
+        return {"status": "no_accounts", "messages": 0}
+    
+    total_messages = 0
+    
+    for account in accounts:
+        # Get active sources
+        result = await db.execute(
+            select(TelegramSource).where(
+                TelegramSource.account_id == account.id,
+                TelegramSource.is_active == True,
+            )
+        )
+        sources = result.scalars().all()
+        
+        if not sources:
+            continue
+        
+        # Connect to Telegram
+        if account.session_name not in telegram_service._active_clients:
+            connected = await telegram_service.connect_account(
+                session_name=account.session_name,
+                api_id_encrypted=account.api_id_encrypted,
+                api_hash_encrypted=account.api_hash_encrypted,
+                session_string_encrypted=account.session_string_encrypted,
+            )
+            if not connected:
+                continue
+        
+        client = telegram_service._active_clients.get(account.session_name)
+        if not client:
+            continue
+        
+        # Fetch messages from each source
+        for source in sources:
+            try:
+                try:
+                    entity_id = int(source.telegram_id)
+                    entity = await client.get_entity(entity_id)
+                except ValueError:
+                    entity = await client.get_entity(source.telegram_id)
+                
+                messages = await client.get_messages(entity, limit=100)
+                
+                # Cache messages
+                source_key = f"{current_user.id}:{source.telegram_id}"
+                _message_cache[source_key] = [
+                    {
+                        "text": msg.text,
+                        "source_name": source.name,
+                        "source_id": source.telegram_id,
+                        "message_id": msg.id,
+                        "timestamp": msg.date.isoformat() if msg.date else None,
+                    }
+                    for msg in messages
+                    if msg.text
+                ]
+                
+                total_messages += len(messages)
+                
+            except Exception as e:
+                logger.error("refresh_source_error", source=source.name, error=str(e))
+    
+    global _cache_time
+    _cache_time = datetime.utcnow()
+    
+    return {
+        "status": "ok",
+        "messages": total_messages,
+        "refreshed_at": _cache_time.isoformat(),
+    }
+
+
+async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
+    """Get all cached messages for a user's sources"""
+    # Get user's sources
+    result = await db.execute(
+        select(TelegramAccount).where(
+            TelegramAccount.user_id == user_id,
+            TelegramAccount.is_active == True,
+        )
+    )
+    accounts = result.scalars().all()
+    
+    all_messages = []
+    
+    for account in accounts:
+        result = await db.execute(
+            select(TelegramSource).where(
+                TelegramSource.account_id == account.id,
+                TelegramSource.is_active == True,
+            )
+        )
+        sources = result.scalars().all()
+        
+        for source in sources:
+            source_key = f"{user_id}:{source.telegram_id}"
+            if source_key in _message_cache:
+                all_messages.extend(_message_cache[source_key])
+    
+    return all_messages

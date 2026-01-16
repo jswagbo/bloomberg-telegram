@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api import auth, users, telegram, signals, tokens, wallets, sources, feed
+from app.api import auth, users, telegram, signals, tokens, wallets, sources, feed, trending
 
 api_router = APIRouter()
 
@@ -14,3 +14,4 @@ api_router.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 api_router.include_router(wallets.router, prefix="/wallets", tags=["wallets"])
 api_router.include_router(sources.router, prefix="/sources", tags=["sources"])
 api_router.include_router(feed.router, prefix="/feed", tags=["feed"])
+api_router.include_router(trending.router, prefix="/trending", tags=["trending"])

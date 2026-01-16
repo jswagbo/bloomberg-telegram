@@ -1,30 +1,22 @@
 "use client";
 
-import { SignalFeed } from "@/components/feed/signal-feed";
-import { FeedFilters } from "@/components/feed/feed-filters";
-import { FeedStats } from "@/components/feed/feed-stats";
+import { TrendingFeed } from "@/components/feed/trending-feed";
 
 export default function HomePage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <span className="text-fire">🔥</span> Signal Feed
-          </h1>
-          <p className="text-terminal-muted mt-1">
-            Real-time intelligence from crypto Telegram channels
-          </p>
-        </div>
-        <FeedStats />
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <span className="text-fire">🔥</span> Trending Tokens
+        </h1>
+        <p className="text-terminal-muted mt-1">
+          Top trending tokens from DexScreener • Cross-referenced with Telegram discussions
+        </p>
       </div>
 
-      {/* Filters */}
-      <FeedFilters />
-
       {/* Main Feed */}
-      <SignalFeed />
+      <TrendingFeed />
     </div>
   );
 }

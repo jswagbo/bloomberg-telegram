@@ -270,6 +270,28 @@ export const api = {
     const response = await apiClient.get(`/signals/insights/${chain}/${address}`);
     return response.data;
   },
+
+  // ============================================
+  // NEW: Trending API (DexScreener + Telegram)
+  // ============================================
+  
+  // Get trending tokens feed
+  getTrendingFeed: async (params: { limit?: number; chain?: string } = {}) => {
+    const response = await apiClient.get("/trending/feed", { params });
+    return response.data;
+  },
+
+  // Get token detail with mentions
+  getTrendingTokenDetail: async (chain: string, address: string) => {
+    const response = await apiClient.get(`/trending/token/${chain}/${address}`);
+    return response.data;
+  },
+
+  // Refresh Telegram messages cache
+  refreshTrendingMessages: async () => {
+    const response = await apiClient.post("/trending/refresh");
+    return response.data;
+  },
 };
 
 export default api;

@@ -315,6 +315,14 @@ export const api = {
     const response = await apiClient.get("/trending/telegram-tokens", { params });
     return response.data;
   },
+
+  // CHAT-FIRST FEED - Finds tokens in chats, then enriches with market data
+  getChatFirstFeed: async (params: {
+    limit?: number;
+  } = {}) => {
+    const response = await apiClient.get("/trending/chat-first", { params });
+    return response.data;
+  },
 };
 
 export default api;

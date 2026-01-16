@@ -26,6 +26,7 @@ from app.services.trending.kol_wallets import kol_wallet_service
 from app.services.trending.new_pairs_service import new_pairs_service, NewPairToken
 from app.services.trending.chat_summarizer import chat_summarizer, TokenChatAnalysis
 from app.services.trending.telegram_token_scanner import telegram_token_scanner
+from app.services.trending.chat_first_scanner import chat_first_scanner
 
 logger = structlog.get_logger()
 
@@ -857,6 +858,118 @@ async def get_telegram_tokens_feed(
     return TelegramTokensFeedResponse(
         tokens=response_tokens,
         total_found=len(found_tokens),
+        messages_scanned=len(messages),
+        last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
+    )
+
+
+# ============================================================================
+# CHAT-FIRST FEED - Finds tokens IN chats, then enriches with market data
+# ============================================================================
+
+class ChatDiscoveredTokenResponse(BaseModel):
+    """A token discovered in chat messages"""
+    address: str
+    chain: str
+    symbol: str
+    name: str
+    discovery_method: str  # url, address, ticker
+    
+    # Chat data
+    mention_count: int
+    chat_count: int
+    chats: List[str]
+    chat_summary: Optional[str]
+    sentiment: Optional[str]
+    per_chat_summaries: List[dict]
+    
+    # Market data
+    price_usd: Optional[float]
+    market_cap: Optional[float]
+    liquidity_usd: Optional[float]
+    price_change_1h: Optional[float]
+    price_change_24h: Optional[float]
+    volume_24h: Optional[float]
+    
+    # Meta
+    first_seen: Optional[str]
+    last_seen: Optional[str]
+    dex_url: Optional[str]
+    image_url: Optional[str]
+
+
+class ChatFirstFeedResponse(BaseModel):
+    """Response for chat-first feed"""
+    tokens: List[ChatDiscoveredTokenResponse]
+    total_discovered: int
+    messages_scanned: int
+    last_updated: str
+
+
+@router.get("/chat-first", response_model=ChatFirstFeedResponse)
+async def get_chat_first_feed(
+    limit: int = Query(50, ge=1, le=100, description="Max tokens to return"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    CHAT-FIRST FEED
+    
+    Inverted flow:
+    1. Scans ALL Telegram messages for token mentions (addresses, $SYMBOLS, URLs)
+    2. Deduplicates and ranks by recency
+    3. Enriches each with DexScreener market data
+    4. Generates AI summaries of chat discussions
+    
+    This finds tokens being discussed even if they're not "trending" on DexScreener.
+    """
+    # 1. Get all messages
+    messages = await _get_all_messages(current_user.id, db, lookback_hours=72)
+    
+    if not messages:
+        return ChatFirstFeedResponse(
+            tokens=[],
+            total_discovered=0,
+            messages_scanned=0,
+            last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
+        )
+    
+    # 2. Scan chats for tokens
+    discovered_tokens = await chat_first_scanner.scan_chats(
+        messages=messages,
+        limit=limit,
+    )
+    
+    # 3. Build response
+    response_tokens = []
+    for token in discovered_tokens:
+        response_tokens.append(ChatDiscoveredTokenResponse(
+            address=token.address,
+            chain=token.chain,
+            symbol=token.symbol or "???",
+            name=token.name or "Unknown",
+            discovery_method=token.discovery_method,
+            mention_count=token.mention_count,
+            chat_count=len(token.chats),
+            chats=list(token.chats)[:5],
+            chat_summary=token.chat_summary,
+            sentiment=token.sentiment,
+            per_chat_summaries=token.per_chat_summaries[:3],
+            price_usd=token.price_usd,
+            market_cap=token.market_cap,
+            liquidity_usd=token.liquidity_usd,
+            price_change_1h=token.price_change_1h,
+            price_change_24h=token.price_change_24h,
+            volume_24h=token.volume_24h,
+            first_seen=token.first_seen.isoformat() if token.first_seen else None,
+            last_seen=token.last_seen.isoformat() if token.last_seen else None,
+            dex_url=token.dex_url or f"https://dexscreener.com/search?q={token.address}",
+            image_url=token.image_url,
+        ))
+    
+    return ChatFirstFeedResponse(
+        tokens=response_tokens,
+        total_discovered=len(discovered_tokens),
         messages_scanned=len(messages),
         last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
     )

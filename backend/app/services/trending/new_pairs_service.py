@@ -189,7 +189,18 @@ class NewPairsService:
             
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("data", {}).get("attributes", {})
+                attrs = data.get("data", {}).get("attributes", {})
+                logger.debug(
+                    "token_info_response",
+                    address=address[:10],
+                    has_holders=bool(attrs.get("holders")),
+                    holder_count=attrs.get("holders", {}).get("count") if attrs.get("holders") else None
+                )
+                return attrs
+            elif resp.status_code == 404:
+                logger.debug("token_info_not_found", chain=chain, address=address[:10])
+            else:
+                logger.warning("token_info_bad_status", chain=chain, address=address[:10], status=resp.status_code)
                 
         except Exception as e:
             logger.warning("token_info_error", chain=chain, address=address[:10], error=str(e))
@@ -431,8 +442,43 @@ class NewPairsService:
             passed=len(filtered_pairs)
         )
         
-        # Sort by holder count (more holders = more legitimate)
-        filtered_pairs.sort(key=lambda x: x.holder_count, reverse=True)
+        # Sort by holder count (more holders = more legitimate), then by age (newer first)
+        filtered_pairs.sort(key=lambda x: (x.holder_count, -x.age_hours), reverse=True)
+        
+        # If we got no results with strict filters, try again with relaxed filters
+        if not filtered_pairs and all_pairs:
+            logger.warning("no_results_with_filters_relaxing")
+            # Return all pairs that passed age/liquidity filters (ignore holder filters)
+            for pair in all_pairs[:50]:
+                token_address = pair.get("base_token_address")
+                if not token_address:
+                    continue
+                
+                new_pair = NewPairToken(
+                    address=token_address,
+                    symbol=pair.get("base_token_symbol", "???"),
+                    name=pair.get("base_token_name", "Unknown"),
+                    chain=pair.get("chain", "unknown"),
+                    price_usd=pair.get("price_usd"),
+                    price_change_24h=pair.get("price_change_24h"),
+                    price_change_1h=pair.get("price_change_1h"),
+                    volume_24h=pair.get("volume_24h"),
+                    liquidity_usd=pair.get("liquidity_usd"),
+                    market_cap=pair.get("fdv_usd"),
+                    holder_count=0,  # Unknown
+                    top_10_percent=50.0,  # Unknown - assume middle
+                    top_11_30_percent=20.0,
+                    top_31_50_percent=15.0,
+                    rest_percent=15.0,
+                    pool_created_at=pair.get("created_at"),
+                    age_hours=pair.get("age_hours", 0),
+                    dex_name=pair.get("dex_name", "unknown"),
+                    is_boosted=pair.get("is_boosted", False),
+                    image_url=pair.get("image_url"),
+                    dexscreener_url=f"https://dexscreener.com/{pair.get('chain', 'solana')}/{token_address}",
+                    gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(pair.get('chain', 'solana'))}/pools/{pair.get('pool_address', token_address)}",
+                )
+                filtered_pairs.append(new_pair)
         
         # Cache results
         _new_pairs_cache = [p.to_dict() for p in filtered_pairs[:limit]]

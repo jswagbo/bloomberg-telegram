@@ -13,9 +13,30 @@ WHICH token they're talking about. This module resolves token references by:
 import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.services.extraction.opinion_extractor import ExtractedOpinion
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime"""
+    return datetime.now(timezone.utc)
+
+
+def parse_timestamp(ts_str: str) -> datetime:
+    """Parse timestamp string to timezone-aware datetime"""
+    if not ts_str:
+        return utcnow()
+    try:
+        # Handle ISO format with Z
+        ts_str = ts_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts_str)
+        # If naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except:
+        return utcnow()
 
 
 @dataclass
@@ -119,7 +140,7 @@ class TokenResolver:
             self._recent_tokens[source_id].append((timestamp, token))
         
         # Clean up old entries
-        cutoff = datetime.utcnow() - self._cache_window
+        cutoff = utcnow() - self._cache_window
         self._recent_tokens[source_id] = [
             (ts, tok) for ts, tok in self._recent_tokens[source_id]
             if ts > cutoff
@@ -216,11 +237,7 @@ class TokenResolver:
         
         # 4. Check recent channel activity
         if opinion.source_id:
-            try:
-                ts = datetime.fromisoformat(opinion.timestamp.replace("Z", "+00:00")) if opinion.timestamp else datetime.utcnow()
-            except:
-                ts = datetime.utcnow()
-            
+            ts = parse_timestamp(opinion.timestamp)
             recent = self.get_recent_tokens(opinion.source_id, ts)
             candidates.extend(recent)
         
@@ -262,11 +279,7 @@ class TokenResolver:
         for msg in all_messages:
             text = msg.get("text") or msg.get("original_text", "")
             source_id = str(msg.get("source_id", ""))
-            
-            try:
-                ts = datetime.fromisoformat(msg.get("timestamp", "").replace("Z", "+00:00"))
-            except:
-                ts = datetime.utcnow()
+            ts = parse_timestamp(msg.get("timestamp", ""))
             
             tokens = self._extract_tokens_from_text(text)
             if tokens:

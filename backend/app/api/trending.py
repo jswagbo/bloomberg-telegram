@@ -27,6 +27,7 @@ from app.services.trending.new_pairs_service import new_pairs_service, NewPairTo
 from app.services.trending.chat_summarizer import chat_summarizer, TokenChatAnalysis
 from app.services.trending.telegram_token_scanner import telegram_token_scanner
 from app.services.trending.chat_first_scanner import chat_first_scanner
+from app.services.trending.contextual_scanner import contextual_scanner
 
 logger = structlog.get_logger()
 
@@ -970,6 +971,115 @@ async def get_chat_first_feed(
     return ChatFirstFeedResponse(
         tokens=response_tokens,
         total_discovered=len(discovered_tokens),
+        messages_scanned=len(messages),
+        last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
+    )
+
+
+# ============================================================================
+# CONTEXTUAL DISCUSSIONS - Captures conversation context around token mentions
+# ============================================================================
+
+class DiscussionResponse(BaseModel):
+    """A token discussion with context"""
+    address: str
+    chain: str
+    symbol: str
+    name: str
+    
+    # Market data
+    price_usd: float
+    market_cap: Optional[float]
+    liquidity_usd: Optional[float]
+    price_change_1h: Optional[float]
+    price_change_24h: Optional[float]
+    volume_24h: Optional[float]
+    dex_url: str
+    image_url: Optional[str]
+    
+    # Discussion data
+    mention_count: int
+    chat_count: int
+    chats: List[str]
+    summary: str
+    sentiment: str
+    
+    # Timestamps
+    first_seen: Optional[str]
+    last_seen: Optional[str]
+
+
+class DiscussionsFeedResponse(BaseModel):
+    """Response for contextual discussions feed"""
+    tokens: List[DiscussionResponse]
+    total_found: int
+    messages_scanned: int
+    last_updated: str
+
+
+@router.get("/discussions", response_model=DiscussionsFeedResponse)
+async def get_discussions_feed(
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    CONTEXTUAL DISCUSSIONS FEED
+    
+    Improved approach:
+    1. Find token mentions in messages
+    2. Capture SURROUNDING messages (10 min window) for context
+    3. Only show tokens with valid DexScreener data
+    4. Generate AI summaries from actual discussions
+    
+    This filters out tokens without DexScreener pages and
+    captures the real conversation context, not just mentions.
+    """
+    # 1. Get all messages
+    messages = await _get_all_messages(current_user.id, db, lookback_hours=72)
+    
+    if not messages:
+        return DiscussionsFeedResponse(
+            tokens=[],
+            total_found=0,
+            messages_scanned=0,
+            last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
+        )
+    
+    # 2. Scan with contextual scanner
+    discussions = await contextual_scanner.scan(
+        messages=messages,
+        limit=limit,
+    )
+    
+    # 3. Build response
+    response_tokens = []
+    for token in discussions:
+        response_tokens.append(DiscussionResponse(
+            address=token.address,
+            chain=token.chain,
+            symbol=token.symbol,
+            name=token.name,
+            price_usd=token.price_usd,
+            market_cap=token.market_cap,
+            liquidity_usd=token.liquidity_usd,
+            price_change_1h=token.price_change_1h,
+            price_change_24h=token.price_change_24h,
+            volume_24h=token.volume_24h,
+            dex_url=token.dex_url,
+            image_url=token.image_url,
+            mention_count=token.mention_count,
+            chat_count=len(token.chats),
+            chats=list(token.chats)[:5],
+            summary=token.summary,
+            sentiment=token.sentiment,
+            first_seen=token.first_seen.isoformat() if token.first_seen else None,
+            last_seen=token.last_seen.isoformat() if token.last_seen else None,
+        ))
+    
+    return DiscussionsFeedResponse(
+        tokens=response_tokens,
+        total_found=len(discussions),
         messages_scanned=len(messages),
         last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
     )

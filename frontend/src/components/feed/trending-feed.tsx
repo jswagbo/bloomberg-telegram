@@ -731,10 +731,10 @@ export function TrendingFeed() {
   const [isScanning, setIsScanning] = useState(false);
   const queryClient = useQueryClient();
 
-  // Use chat-first endpoint - finds tokens IN chats, then enriches
+  // Use discussions endpoint - contextual discussions with DexScreener validation
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["chat-first-feed"],
-    queryFn: () => api.getChatFirstFeed({
+    queryKey: ["discussions-feed"],
+    queryFn: () => api.getDiscussionsFeed({
       limit: 50,
     }),
     staleTime: 30000,  // 30 seconds
@@ -746,7 +746,7 @@ export function TrendingFeed() {
     mutationFn: () => api.refreshTrendingMessages(),
     onSuccess: (result) => {
       setLastScan(new Date());
-      queryClient.invalidateQueries({ queryKey: ["chat-first-feed"] });
+      queryClient.invalidateQueries({ queryKey: ["discussions-feed"] });
     },
   });
 
@@ -775,7 +775,7 @@ export function TrendingFeed() {
         refreshMutation.mutate(undefined, {
           onSuccess: () => {
             setLastScan(new Date());
-            queryClient.invalidateQueries({ queryKey: ["chat-first-feed"] });
+            queryClient.invalidateQueries({ queryKey: ["discussions-feed"] });
           }
         });
       }
@@ -787,7 +787,7 @@ export function TrendingFeed() {
         refreshMutation.mutate(undefined, {
           onSuccess: () => {
             setLastScan(new Date());
-            queryClient.invalidateQueries({ queryKey: ["chat-first-feed"] });
+            queryClient.invalidateQueries({ queryKey: ["discussions-feed"] });
           }
         });
       }
@@ -823,9 +823,9 @@ export function TrendingFeed() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold">Tokens Discussed in Chats</h2>
+          <h2 className="text-xl font-bold">Token Discussions</h2>
           <p className="text-sm text-terminal-muted">
-            Last 50 tokens found in your Telegram • Sorted by most recent
+            Tokens with DexScreener data • AI-summarized chat context
           </p>
         </div>
         

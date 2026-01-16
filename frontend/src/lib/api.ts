@@ -323,6 +323,14 @@ export const api = {
     const response = await apiClient.get("/trending/chat-first", { params });
     return response.data;
   },
+
+  // DISCUSSIONS FEED - Contextual discussions with DexScreener validation
+  getDiscussionsFeed: async (params: {
+    limit?: number;
+  } = {}) => {
+    const response = await apiClient.get("/trending/discussions", { params });
+    return response.data;
+  },
 };
 
 export default api;

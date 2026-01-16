@@ -396,6 +396,7 @@ export function TrendingFeed() {
   const [maxTop10, setMaxTop10] = useState(50);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastScan, setLastScan] = useState<Date | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
   const queryClient = useQueryClient();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -421,31 +422,46 @@ export function TrendingFeed() {
     },
   });
 
-  // Scan Telegram messages
+  // Scan Telegram messages - wrapped to prevent loops
   const handleScanTelegram = useCallback(async () => {
+    if (isScanning) return;  // Prevent concurrent scans
+    
+    setIsScanning(true);
     try {
       await refreshMutation.mutateAsync();
       await refetch();
     } catch (error) {
       console.error("Failed to scan Telegram:", error);
+    } finally {
+      setIsScanning(false);
     }
-  }, [refreshMutation, refetch]);
+  }, [isScanning, refreshMutation, refetch]);
 
   // Auto-scan Telegram every minute when autoRefresh is on
   useEffect(() => {
     if (!autoRefresh) return;
     
-    // Initial scan on mount
+    // Initial scan on mount (only once)
     const initialScan = setTimeout(() => {
-      if (!refreshMutation.isPending) {
-        handleScanTelegram();
+      if (!isScanning && !refreshMutation.isPending) {
+        refreshMutation.mutate(undefined, {
+          onSuccess: () => {
+            setLastScan(new Date());
+            queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
+          }
+        });
       }
-    }, 2000);  // Wait 2 seconds after mount
+    }, 3000);  // Wait 3 seconds after mount
     
-    // Then scan every minute
+    // Then scan every 60 seconds
     const interval = setInterval(() => {
-      if (!refreshMutation.isPending) {
-        handleScanTelegram();
+      if (!isScanning && !refreshMutation.isPending) {
+        refreshMutation.mutate(undefined, {
+          onSuccess: () => {
+            setLastScan(new Date());
+            queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
+          }
+        });
       }
     }, 60000);  // 1 minute
     
@@ -453,7 +469,8 @@ export function TrendingFeed() {
       clearTimeout(initialScan);
       clearInterval(interval);
     };
-  }, [autoRefresh, handleScanTelegram, refreshMutation.isPending]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh]);  // Only depend on autoRefresh to prevent loops
 
   const handleRefresh = async () => {
     await handleScanTelegram();

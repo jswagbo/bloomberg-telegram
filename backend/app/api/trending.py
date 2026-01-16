@@ -410,9 +410,18 @@ async def refresh_messages(
     
     logger.info("refresh_accounts_found", count=len(accounts))
     
+    global _last_scan_time
+    
     if not accounts:
+        _last_scan_time = datetime.utcnow()  # Still update scan time
         logger.warning("refresh_no_accounts", user_id=str(current_user.id))
-        return {"status": "no_accounts", "messages": 0, "accounts": 0, "sources": 0}
+        return {
+            "status": "no_accounts", 
+            "messages": 0, 
+            "accounts": 0, 
+            "sources": 0,
+            "refreshed_at": _last_scan_time.isoformat(),
+        }
     
     total_messages = 0
     total_sources = 0

@@ -29,15 +29,16 @@ interface ChatFirstToken {
   chain: string;
   symbol: string;
   name: string;
-  discovery_method: string;  // url, address, ticker
+  discovery_method?: string;  // url, address, ticker (optional for discussions endpoint)
   
   // Chat data
   mention_count: number;
   chat_count: number;
   chats: string[];
-  chat_summary: string | null;
-  sentiment: string | null;  // bullish, bearish, neutral
-  per_chat_summaries: Array<{
+  chat_summary?: string | null;  // From chat-first endpoint
+  summary?: string | null;  // From discussions endpoint (AI summary)
+  sentiment: string | null;  // bullish, bearish, neutral, mixed
+  per_chat_summaries?: Array<{
     chat_name: string;
     message_count: number;
     sentiment: string;
@@ -234,14 +235,38 @@ function ChatFirstTokenCard({ token }: { token: ChatFirstToken }) {
           </div>
         </div>
 
-        {/* Chat Summary */}
-        {token.chat_summary && (
+        {/* Chat Summary - Always show if we have summary or chats */}
+        {(token.chat_summary || token.summary || token.chats?.length > 0) && (
           <div className="p-4">
-            <div className="bg-terminal-bg/50 rounded-lg p-3">
-              <p className="text-sm text-terminal-text leading-relaxed">
-                {token.chat_summary}
-              </p>
-            </div>
+            {(token.chat_summary || token.summary) ? (
+              <div className="bg-terminal-bg/50 rounded-lg p-3">
+                <p className="text-sm text-terminal-text leading-relaxed">
+                  {token.summary || token.chat_summary}
+                </p>
+              </div>
+            ) : (
+              <div className="bg-terminal-bg/50 rounded-lg p-3">
+                <p className="text-sm text-terminal-muted italic">
+                  Discussed in {token.chats?.length || 0} chats • {token.mention_count} mentions
+                </p>
+              </div>
+            )}
+            
+            {/* Show which chats */}
+            {token.chats && token.chats.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {token.chats.slice(0, 3).map((chat, i) => (
+                  <span key={i} className="text-xs px-2 py-0.5 bg-terminal-border rounded text-terminal-muted">
+                    {chat}
+                  </span>
+                ))}
+                {token.chats.length > 3 && (
+                  <span className="text-xs px-2 py-0.5 text-terminal-muted">
+                    +{token.chats.length - 3} more
+                  </span>
+                )}
+              </div>
+            )}
             
             {/* Per-chat summaries */}
             {token.per_chat_summaries && token.per_chat_summaries.length > 0 && (

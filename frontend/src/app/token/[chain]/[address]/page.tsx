@@ -28,6 +28,13 @@ interface TokenMessage {
   is_human_discussion: boolean;
 }
 
+interface KOLHolder {
+  address: string;
+  name: string;
+  twitter: string | null;
+  tier: string;
+}
+
 export default function TokenDetailPage() {
   const params = useParams();
   const chain = params.chain as string;
@@ -76,6 +83,9 @@ export default function TokenDetailPage() {
   const totalSentiment = data.sentiment.bullish + data.sentiment.bearish + data.sentiment.neutral;
   const bullishPercent = totalSentiment > 0 ? (data.sentiment.bullish / totalSentiment) * 100 : 50;
   const messages: TokenMessage[] = data.messages || [];
+  const kolHolders: KOLHolder[] = data.kol_holders || [];
+  const priceChange = data.price_change_6h ?? data.price_change_24h;
+  const priceChangeLabel = data.price_change_6h !== null ? "6h" : "24h";
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -126,13 +136,13 @@ export default function TokenDetailPage() {
                 ${data.price_usd < 0.01 ? data.price_usd.toExponential(2) : data.price_usd.toFixed(6)}
               </p>
             )}
-            {data.price_change_24h !== null && (
+            {priceChange !== null && (
               <p className={cn(
-                "flex items-center gap-1 justify-end",
-                data.price_change_24h >= 0 ? "text-bullish" : "text-bearish"
+                "flex items-center gap-1 justify-end font-medium",
+                priceChange >= 0 ? "text-bullish" : "text-bearish"
               )}>
-                {data.price_change_24h >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                {Math.abs(data.price_change_24h).toFixed(2)}% (24h)
+                {priceChange >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
+                {Math.abs(priceChange).toFixed(2)}% ({priceChangeLabel})
               </p>
             )}
             <a
@@ -153,7 +163,7 @@ export default function TokenDetailPage() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="grid grid-cols-3 gap-4"
+        className="grid grid-cols-4 gap-4"
       >
         <div className="bg-terminal-card border border-terminal-border rounded-xl p-4 text-center">
           <div className="text-3xl font-bold text-primary-400">{data.total_mentions}</div>
@@ -167,7 +177,51 @@ export default function TokenDetailPage() {
           <div className="text-3xl font-bold">{data.sources.length}</div>
           <div className="text-sm text-terminal-muted">Sources</div>
         </div>
+        <div className="bg-terminal-card border border-terminal-border rounded-xl p-4 text-center">
+          <div className="text-3xl font-bold text-yellow-500">{data.kol_count || 0}</div>
+          <div className="text-sm text-terminal-muted">KOL Mentions</div>
+        </div>
       </motion.div>
+
+      {/* KOL Holders Section */}
+      {kolHolders.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.12 }}
+          className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4"
+        >
+          <h3 className="font-semibold text-yellow-500 mb-3 flex items-center gap-2">
+            🔥 KOL Activity
+          </h3>
+          <div className="flex flex-wrap gap-3">
+            {kolHolders.map((kol, i) => (
+              <div key={i} className="bg-terminal-card rounded-lg px-3 py-2 flex items-center gap-2">
+                <span className="font-medium">{kol.name}</span>
+                {kol.twitter && (
+                  <a 
+                    href={`https://twitter.com/${kol.twitter.replace('@', '')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary-400 text-sm hover:underline"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {kol.twitter}
+                  </a>
+                )}
+                <span className={cn(
+                  "text-xs px-1.5 py-0.5 rounded",
+                  kol.tier === "mega" ? "bg-yellow-500/20 text-yellow-500" :
+                  kol.tier === "large" ? "bg-purple-500/20 text-purple-400" :
+                  "bg-terminal-border text-terminal-muted"
+                )}>
+                  {kol.tier}
+                </span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
       {/* Sentiment Bar */}
       {totalSentiment > 0 && (

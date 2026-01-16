@@ -2,7 +2,7 @@
 DexScreener Trending Service
 
 Fetches top trending tokens from DexScreener.
-These are the ONLY tokens that should appear in our feed.
+Focuses on tokens trending in the last 6 hours.
 """
 
 import httpx
@@ -17,7 +17,7 @@ logger = structlog.get_logger()
 # Cache
 _trending_cache: List[Dict[str, Any]] = []
 _cache_time: Optional[datetime] = None
-CACHE_DURATION = timedelta(minutes=5)
+CACHE_DURATION = timedelta(minutes=3)  # Refresh more frequently for 6h trending
 
 
 @dataclass
@@ -29,7 +29,10 @@ class TrendingToken:
     chain: str
     price_usd: Optional[float]
     price_change_24h: Optional[float]
+    price_change_6h: Optional[float]  # NEW: 6-hour change
+    price_change_1h: Optional[float]  # NEW: 1-hour change
     volume_24h: Optional[float]
+    volume_6h: Optional[float]  # NEW: 6-hour volume
     market_cap: Optional[float]
     liquidity: Optional[float]
     image_url: Optional[str]
@@ -43,7 +46,10 @@ class TrendingToken:
             "chain": self.chain,
             "price_usd": self.price_usd,
             "price_change_24h": self.price_change_24h,
+            "price_change_6h": self.price_change_6h,
+            "price_change_1h": self.price_change_1h,
             "volume_24h": self.volume_24h,
+            "volume_6h": self.volume_6h,
             "market_cap": self.market_cap,
             "liquidity": self.liquidity,
             "image_url": self.image_url,
@@ -83,14 +89,16 @@ class DexScreenerTrendingService:
         chains: List[str] = None,
         limit: int = 100,
         force_refresh: bool = False,
+        hours: int = 6,  # Trending in last N hours
     ) -> List[TrendingToken]:
         """
-        Fetch trending tokens from DexScreener.
+        Fetch trending tokens from DexScreener - focused on last 6 hours.
         
         Args:
             chains: Filter by chains (default: solana, base, bsc)
             limit: Max tokens to return
             force_refresh: Bypass cache
+            hours: Trending window (default 6 hours)
         
         Returns:
             List of trending tokens
@@ -110,9 +118,6 @@ class DexScreenerTrendingService:
         client = await self._get_client()
         
         try:
-            # DexScreener has different endpoints for boosted/trending tokens
-            # We'll try multiple approaches
-            
             # 1. Get token boosts (promoted tokens - often trending)
             try:
                 resp = await client.get(f"{self.base_url}/token-boosts/top/v1")
@@ -141,25 +146,25 @@ class DexScreenerTrendingService:
             except Exception as e:
                 logger.warning("profiles_fetch_failed", error=str(e))
             
-            # 3. Search for high-volume tokens on each chain
+            # 3. Get top gainers on each chain (most active in last 6h)
             for chain in chains:
                 try:
-                    # DexScreener search endpoint
+                    # Search for tokens with high 6h volume/activity
                     resp = await client.get(
                         f"{self.base_url}/latest/dex/search",
                         params={"q": f"chain:{chain}"}
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        pairs = data.get("pairs", [])[:30]
+                        pairs = data.get("pairs", [])[:40]
                         for pair in pairs:
-                            token = self._parse_pair(pair)
+                            token = self._parse_pair(pair, hours=hours)
                             if token:
                                 all_tokens.append(token)
                 except Exception as e:
                     logger.warning("search_fetch_failed", chain=chain, error=str(e))
                 
-                await asyncio.sleep(0.2)  # Rate limiting
+                await asyncio.sleep(0.1)  # Rate limiting
             
             # Deduplicate by address
             seen = set()
@@ -170,11 +175,16 @@ class DexScreenerTrendingService:
                     seen.add(key)
                     unique_tokens.append(token)
             
-            # Sort by volume (if available)
-            unique_tokens.sort(
-                key=lambda t: t.volume_24h or 0,
-                reverse=True
-            )
+            # Sort by 6h activity (volume + price change)
+            def activity_score(t: TrendingToken) -> float:
+                score = 0
+                if t.volume_24h:
+                    score += t.volume_24h / 1000  # Normalize
+                if t.price_change_6h is not None:
+                    score += abs(t.price_change_6h) * 100  # Big movers score higher
+                return score
+            
+            unique_tokens.sort(key=activity_score, reverse=True)
             
             # Cache the results
             _trending_cache = [t.to_dict() for t in unique_tokens[:limit]]
@@ -206,7 +216,10 @@ class DexScreenerTrendingService:
                 chain=chain,
                 price_usd=None,
                 price_change_24h=None,
+                price_change_6h=None,
+                price_change_1h=None,
                 volume_24h=None,
+                volume_6h=None,
                 market_cap=None,
                 liquidity=None,
                 image_url=data.get("icon"),
@@ -231,7 +244,10 @@ class DexScreenerTrendingService:
                 chain=chain,
                 price_usd=None,
                 price_change_24h=None,
+                price_change_6h=None,
+                price_change_1h=None,
                 volume_24h=None,
+                volume_6h=None,
                 market_cap=None,
                 liquidity=None,
                 image_url=data.get("icon"),
@@ -240,7 +256,7 @@ class DexScreenerTrendingService:
         except Exception:
             return None
     
-    def _parse_pair(self, pair: Dict[str, Any]) -> Optional[TrendingToken]:
+    def _parse_pair(self, pair: Dict[str, Any], hours: int = 6) -> Optional[TrendingToken]:
         """Parse a token from a trading pair"""
         try:
             base_token = pair.get("baseToken", {})
@@ -249,6 +265,8 @@ class DexScreenerTrendingService:
                 return None
             
             chain = self._normalize_chain(pair.get("chainId", "solana"))
+            price_change = pair.get("priceChange", {})
+            volume = pair.get("volume", {})
             
             return TrendingToken(
                 address=address,
@@ -256,8 +274,11 @@ class DexScreenerTrendingService:
                 name=base_token.get("name", base_token.get("symbol", "Unknown")),
                 chain=chain,
                 price_usd=float(pair.get("priceUsd", 0)) if pair.get("priceUsd") else None,
-                price_change_24h=pair.get("priceChange", {}).get("h24"),
-                volume_24h=float(pair.get("volume", {}).get("h24", 0)) if pair.get("volume", {}).get("h24") else None,
+                price_change_24h=price_change.get("h24"),
+                price_change_6h=price_change.get("h6"),
+                price_change_1h=price_change.get("h1"),
+                volume_24h=float(volume.get("h24", 0)) if volume.get("h24") else None,
+                volume_6h=float(volume.get("h6", 0)) if volume.get("h6") else None,
                 market_cap=float(pair.get("marketCap", 0)) if pair.get("marketCap") else None,
                 liquidity=float(pair.get("liquidity", {}).get("usd", 0)) if pair.get("liquidity", {}).get("usd") else None,
                 image_url=pair.get("info", {}).get("imageUrl"),

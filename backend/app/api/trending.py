@@ -2,8 +2,9 @@
 Trending API - DexScreener trending coins + Telegram mentions
 
 This is the main feed endpoint. Only shows coins that are:
-1. Trending on DexScreener (top 100)
-2. Cross-referenced with what Telegram chats are saying about them
+1. Trending on DexScreener (top 100 in last 6 hours)
+2. Have at least ONE mention in Telegram chats (no mentions = hidden)
+3. Cross-referenced with KOL wallet activity
 """
 
 from typing import List, Optional
@@ -21,10 +22,19 @@ from app.models.user import User
 from app.models.telegram import TelegramAccount, TelegramSource
 from app.services.trending.dexscreener_trending import trending_service
 from app.services.trending.mention_scanner import mention_scanner, TokenMentionSummary
+from app.services.trending.kol_wallets import kol_wallet_service
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+class KOLHolder(BaseModel):
+    """A KOL who holds or mentioned this token"""
+    address: str
+    name: str
+    twitter: Optional[str]
+    tier: str  # mega, large, medium, small
 
 
 class TrendingTokenResponse(BaseModel):
@@ -36,7 +46,10 @@ class TrendingTokenResponse(BaseModel):
     chain: str
     price_usd: Optional[float]
     price_change_24h: Optional[float]
+    price_change_6h: Optional[float]
+    price_change_1h: Optional[float]
     volume_24h: Optional[float]
+    volume_6h: Optional[float]
     market_cap: Optional[float]
     liquidity: Optional[float]
     image_url: Optional[str]
@@ -48,6 +61,10 @@ class TrendingTokenResponse(BaseModel):
     sources: List[str]
     sentiment: dict
     
+    # KOL data
+    kol_holders: List[KOLHolder]
+    kol_count: int
+    
     # Top discussion messages (human only)
     top_messages: List[dict]
 
@@ -56,6 +73,8 @@ class TrendingFeedResponse(BaseModel):
     """Response for the trending feed"""
     tokens: List[TrendingTokenResponse]
     total_tokens: int
+    tokens_with_mentions: int  # How many had mentions
+    tokens_hidden: int  # How many were hidden (no mentions)
     last_updated: str
     messages_scanned: int
 
@@ -69,7 +88,9 @@ class TokenDetailResponse(BaseModel):
     chain: str
     price_usd: Optional[float]
     price_change_24h: Optional[float]
+    price_change_6h: Optional[float]
     volume_24h: Optional[float]
+    volume_6h: Optional[float]
     market_cap: Optional[float]
     dexscreener_url: str
     
@@ -78,6 +99,10 @@ class TokenDetailResponse(BaseModel):
     human_discussions: int
     sources: List[str]
     sentiment: dict
+    
+    # KOL data
+    kol_holders: List[KOLHolder]
+    kol_count: int
     
     # All human discussion messages
     messages: List[dict]
@@ -92,28 +117,34 @@ _cache_time: Optional[datetime] = None
 async def get_trending_feed(
     limit: int = Query(50, ge=1, le=100),
     chain: Optional[str] = Query(None, description="Filter by chain"),
+    include_no_mentions: bool = Query(False, description="Include tokens with no mentions"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get trending tokens feed.
+    Get trending tokens feed (last 6 hours).
     
     Returns top trending tokens from DexScreener, cross-referenced with
     what Telegram chats are saying about them.
+    
+    By default, tokens with NO mentions are hidden.
     """
     global _message_cache, _cache_time
     
-    # 1. Get trending tokens from DexScreener
+    # 1. Get trending tokens from DexScreener (last 6 hours)
     chains = [chain] if chain else ["solana", "base", "bsc"]
     trending_tokens = await trending_service.get_trending_tokens(
         chains=chains,
-        limit=limit,
+        limit=limit * 2,  # Fetch more since we'll filter
+        hours=6,
     )
     
     if not trending_tokens:
         return TrendingFeedResponse(
             tokens=[],
             total_tokens=0,
+            tokens_with_mentions=0,
+            tokens_hidden=0,
             last_updated=datetime.utcnow().isoformat(),
             messages_scanned=0,
         )
@@ -128,16 +159,53 @@ async def get_trending_feed(
     ]
     mention_results = mention_scanner.scan_messages_for_tokens(messages, token_dicts)
     
-    # 4. Build response
+    # 4. Check for KOL mentions
+    kol_results = {}
+    for token in trending_tokens:
+        # Get messages that mention this token
+        token_messages = []
+        if token.address in mention_results:
+            mentions = mention_results[token.address]
+            token_messages = [{"text": m.text} for m in mentions.mentions]
+        
+        kol_summary = await kol_wallet_service.check_kol_activity(
+            token.address, token_messages
+        )
+        kol_results[token.address] = kol_summary
+    
+    # 5. Build response - ONLY include tokens with mentions (unless include_no_mentions=True)
     response_tokens = []
+    tokens_hidden = 0
+    
     for token in trending_tokens:
         mentions = mention_results.get(token.address)
+        kol_data = kol_results.get(token.address)
+        
+        total_mentions = mentions.total_mentions if mentions else 0
+        
+        # Skip tokens with no mentions (unless explicitly requested)
+        if not include_no_mentions and total_mentions == 0:
+            tokens_hidden += 1
+            continue
         
         # Get top human discussion messages
         top_messages = []
         if mentions:
             human_msgs = [m for m in mentions.mentions if m.is_human_discussion]
             top_messages = [m.to_dict() for m in human_msgs[:3]]
+        
+        # Format KOL holders
+        kol_holders = []
+        if kol_data and kol_data.named_holders:
+            kol_holders = [
+                KOLHolder(
+                    address=h["address"],
+                    name=h["name"],
+                    twitter=h.get("twitter"),
+                    tier=h["tier"],
+                )
+                for h in kol_data.named_holders
+            ]
         
         response_tokens.append(TrendingTokenResponse(
             address=token.address,
@@ -146,24 +214,34 @@ async def get_trending_feed(
             chain=token.chain,
             price_usd=token.price_usd,
             price_change_24h=token.price_change_24h,
+            price_change_6h=token.price_change_6h,
+            price_change_1h=token.price_change_1h,
             volume_24h=token.volume_24h,
+            volume_6h=token.volume_6h,
             market_cap=token.market_cap,
             liquidity=token.liquidity,
             image_url=token.image_url,
             dexscreener_url=token.dexscreener_url,
-            total_mentions=mentions.total_mentions if mentions else 0,
+            total_mentions=total_mentions,
             human_discussions=mentions.human_discussions if mentions else 0,
             sources=mentions.sources if mentions else [],
             sentiment=mentions.to_dict()["sentiment"] if mentions else {"bullish": 0, "bearish": 0, "neutral": 0},
+            kol_holders=kol_holders,
+            kol_count=kol_data.total_kol_holders if kol_data else 0,
             top_messages=top_messages,
         ))
     
     # Sort by mentions (tokens being discussed first)
-    response_tokens.sort(key=lambda t: t.human_discussions, reverse=True)
+    response_tokens.sort(key=lambda t: (t.total_mentions, t.human_discussions), reverse=True)
+    
+    # Limit to requested amount
+    response_tokens = response_tokens[:limit]
     
     return TrendingFeedResponse(
         tokens=response_tokens,
         total_tokens=len(response_tokens),
+        tokens_with_mentions=len(response_tokens),
+        tokens_hidden=tokens_hidden,
         last_updated=datetime.utcnow().isoformat(),
         messages_scanned=len(messages),
     )
@@ -181,15 +259,15 @@ async def get_token_detail(
     
     Shows:
     - Token info from DexScreener
-    - Total mentions count
+    - Total mentions count (how many times CA or symbol was mentioned)
     - All human discussion messages
+    - KOL wallets that hold or mentioned this token
     - "No mentions" if not discussed
     """
     # 1. Get token info from DexScreener
     token = await trending_service.get_token_info(address, chain)
     
     if not token:
-        # Create basic token info if not found
         token_symbol = "???"
         token_name = "Unknown Token"
     else:
@@ -208,6 +286,23 @@ async def get_token_detail(
     # 3. Get only human discussion messages
     human_messages = [m.to_dict() for m in mentions.mentions if m.is_human_discussion]
     
+    # 4. Check for KOL activity
+    token_messages = [{"text": m.text} for m in mentions.mentions]
+    kol_data = await kol_wallet_service.check_kol_activity(address, token_messages)
+    
+    # Format KOL holders
+    kol_holders = []
+    if kol_data and kol_data.named_holders:
+        kol_holders = [
+            KOLHolder(
+                address=h["address"],
+                name=h["name"],
+                twitter=h.get("twitter"),
+                tier=h["tier"],
+            )
+            for h in kol_data.named_holders
+        ]
+    
     return TokenDetailResponse(
         address=address,
         symbol=token.symbol if token else token_symbol,
@@ -215,13 +310,17 @@ async def get_token_detail(
         chain=chain,
         price_usd=token.price_usd if token else None,
         price_change_24h=token.price_change_24h if token else None,
+        price_change_6h=token.price_change_6h if token else None,
         volume_24h=token.volume_24h if token else None,
+        volume_6h=token.volume_6h if token else None,
         market_cap=token.market_cap if token else None,
         dexscreener_url=token.dexscreener_url if token else f"https://dexscreener.com/{chain}/{address}",
         total_mentions=mentions.total_mentions,
         human_discussions=mentions.human_discussions,
         sources=mentions.sources,
         sentiment=mentions.to_dict()["sentiment"],
+        kol_holders=kol_holders,
+        kol_count=kol_data.total_kol_holders if kol_data else 0,
         messages=human_messages,
     )
 

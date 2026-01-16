@@ -21,6 +21,13 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import api from "@/lib/api";
 
+interface KOLHolder {
+  address: string;
+  name: string;
+  twitter: string | null;
+  tier: string;
+}
+
 interface TrendingToken {
   address: string;
   symbol: string;
@@ -28,7 +35,10 @@ interface TrendingToken {
   chain: string;
   price_usd: number | null;
   price_change_24h: number | null;
+  price_change_6h: number | null;
+  price_change_1h: number | null;
   volume_24h: number | null;
+  volume_6h: number | null;
   market_cap: number | null;
   dexscreener_url: string;
   image_url: string | null;
@@ -40,6 +50,8 @@ interface TrendingToken {
     bearish: number;
     neutral: number;
   };
+  kol_holders: KOLHolder[];
+  kol_count: number;
   top_messages: Array<{
     text: string;
     source_name: string;
@@ -61,31 +73,23 @@ function TrendingCard({ token }: { token: TrendingToken }) {
 
   const totalSentiment = token.sentiment.bullish + token.sentiment.bearish + token.sentiment.neutral;
   const bullishPercent = totalSentiment > 0 ? (token.sentiment.bullish / totalSentiment) * 100 : 50;
-  
-  const hasMentions = token.total_mentions > 0;
-  const hasDiscussion = token.human_discussions > 0;
+
+  // Use 6h price change as primary (more relevant for trending)
+  const priceChange = token.price_change_6h ?? token.price_change_24h;
+  const priceChangeLabel = token.price_change_6h !== null ? "6h" : "24h";
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn(
-        "bg-terminal-card border rounded-xl overflow-hidden hover:border-primary-600/50 transition-all",
-        hasDiscussion ? "border-primary-600/30" : "border-terminal-border"
-      )}
+      className="bg-terminal-card border border-primary-600/30 rounded-xl overflow-hidden hover:border-primary-600/50 transition-all"
     >
       <Link href={`/token/${token.chain}/${token.address}`}>
         {/* Header */}
-        <div className={cn(
-          "px-4 py-3 flex items-center justify-between",
-          hasDiscussion ? "bg-primary-600/10" : "bg-terminal-bg/50"
-        )}>
+        <div className="px-4 py-3 flex items-center justify-between bg-primary-600/10">
           <div className="flex items-center gap-3">
             {/* Token Icon */}
-            <div className={cn(
-              "w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold",
-              hasDiscussion ? "bg-primary-600/20 text-primary-400" : "bg-terminal-border text-terminal-muted"
-            )}>
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold bg-primary-600/20 text-primary-400">
               {token.image_url ? (
                 <img src={token.image_url} alt={token.symbol} className="w-full h-full rounded-lg object-cover" />
               ) : (
@@ -116,45 +120,36 @@ function TrendingCard({ token }: { token: TrendingToken }) {
                 ${token.price_usd < 0.01 ? token.price_usd.toExponential(2) : token.price_usd.toFixed(4)}
               </p>
             )}
-            {token.price_change_24h !== null && (
+            {priceChange !== null && (
               <p className={cn(
-                "text-xs flex items-center gap-1 justify-end",
-                token.price_change_24h >= 0 ? "text-bullish" : "text-bearish"
+                "text-xs flex items-center gap-1 justify-end font-medium",
+                priceChange >= 0 ? "text-bullish" : "text-bearish"
               )}>
-                {token.price_change_24h >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                {Math.abs(token.price_change_24h).toFixed(1)}%
+                {priceChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                {Math.abs(priceChange).toFixed(1)}% ({priceChangeLabel})
               </p>
             )}
           </div>
         </div>
 
-        {/* Mentions Section */}
-        <div className="p-4 border-t border-terminal-border">
-          {/* Mention Stats */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-1.5">
-                <MessageSquare className="w-4 h-4 text-terminal-muted" />
-                <span className={cn(
-                  "text-sm font-medium",
-                  hasDiscussion ? "text-primary-400" : "text-terminal-muted"
-                )}>
-                  {token.human_discussions} discussions
-                </span>
+        {/* Mention Count - PROMINENT */}
+        <div className="px-4 py-3 bg-terminal-bg/80 border-y border-terminal-border">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="bg-primary-600/20 rounded-lg px-3 py-2">
+                <span className="text-2xl font-bold text-primary-400">{token.total_mentions}</span>
               </div>
-              {token.sources.length > 0 && (
-                <div className="flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-terminal-muted" />
-                  <span className="text-sm text-terminal-muted">
-                    {token.sources.length} sources
-                  </span>
-                </div>
-              )}
+              <div>
+                <p className="text-sm font-medium">Mentions</p>
+                <p className="text-xs text-terminal-muted">
+                  {token.human_discussions} discussions • {token.sources.length} sources
+                </p>
+              </div>
             </div>
             
             {totalSentiment > 0 && (
               <span className={cn(
-                "text-xs px-2 py-0.5 rounded",
+                "text-xs px-2 py-1 rounded font-medium",
                 bullishPercent >= 60 ? "bg-bullish/20 text-bullish" :
                 bullishPercent <= 40 ? "bg-bearish/20 text-bearish" :
                 "bg-terminal-border text-terminal-muted"
@@ -163,9 +158,28 @@ function TrendingCard({ token }: { token: TrendingToken }) {
               </span>
             )}
           </div>
+        </div>
 
-          {/* Top Discussion */}
-          {hasDiscussion && token.top_messages.length > 0 ? (
+        {/* KOL Holders */}
+        {token.kol_count > 0 && (
+          <div className="px-4 py-2 bg-yellow-500/10 border-b border-terminal-border">
+            <div className="flex items-center gap-2">
+              <Flame className="w-4 h-4 text-yellow-500" />
+              <span className="text-xs font-medium text-yellow-500">
+                {token.kol_count} KOL{token.kol_count > 1 ? 's' : ''} mentioned
+              </span>
+              {token.kol_holders.slice(0, 2).map((kol, i) => (
+                <span key={i} className="text-xs text-terminal-muted">
+                  {kol.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Top Discussion */}
+        <div className="p-4">
+          {token.top_messages.length > 0 ? (
             <div className="space-y-2">
               {token.top_messages.slice(0, 1).map((msg, i) => (
                 <div key={i} className="bg-terminal-bg/50 rounded-lg p-3">
@@ -180,14 +194,9 @@ function TrendingCard({ token }: { token: TrendingToken }) {
               ))}
             </div>
           ) : (
-            <div className="bg-terminal-bg/30 rounded-lg p-3 text-center">
-              <p className="text-sm text-terminal-muted italic">
-                No discussions yet
-              </p>
-              <p className="text-xs text-terminal-muted mt-1">
-                Click "Refresh" to scan for mentions
-              </p>
-            </div>
+            <p className="text-sm text-terminal-muted italic text-center">
+              Mentioned but no discussion captured yet
+            </p>
           )}
         </div>
 
@@ -287,8 +296,10 @@ export function TrendingFeed() {
 
       {/* Stats */}
       {data && (
-        <div className="flex items-center gap-4 text-sm text-terminal-muted">
-          <span>{data.total_tokens} trending tokens</span>
+        <div className="flex flex-wrap items-center gap-4 text-sm text-terminal-muted">
+          <span className="font-medium text-primary-400">{data.tokens_with_mentions} tokens with mentions</span>
+          <span>•</span>
+          <span>{data.tokens_hidden} trending tokens hidden (no mentions)</span>
           <span>•</span>
           <span>{data.messages_scanned} messages scanned</span>
           <span>•</span>

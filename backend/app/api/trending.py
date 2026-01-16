@@ -171,6 +171,7 @@ class NewPairsFeedResponse(BaseModel):
 # In-memory message cache (per source)
 _message_cache: dict = {}
 _cache_time: Optional[datetime] = None
+_last_scan_time: Optional[datetime] = None  # Track when Telegram was actually scanned
 
 
 @router.get("/feed", response_model=TrendingFeedResponse)
@@ -494,8 +495,9 @@ async def refresh_messages(
                 errors.append(error_msg)
                 logger.error("refresh_source_error", source=source.name, error=str(e))
     
-    global _cache_time
+    global _cache_time, _last_scan_time
     _cache_time = datetime.utcnow()
+    _last_scan_time = _cache_time  # Track actual scan time
     
     logger.info("refresh_complete", 
                 messages=total_messages, 
@@ -635,7 +637,7 @@ async def get_new_pairs_feed(
                 "require_boosted": require_boosted,
                 "min_liquidity": min_liquidity,
             },
-            last_updated=datetime.utcnow().isoformat(),
+            last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
             messages_scanned=0,
         )
     
@@ -750,6 +752,6 @@ async def get_new_pairs_feed(
             "min_liquidity": min_liquidity,
             "include_no_mentions": include_no_mentions,
         },
-        last_updated=datetime.utcnow().isoformat(),
+        last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
         messages_scanned=len(messages),
     )

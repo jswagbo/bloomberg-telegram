@@ -292,6 +292,20 @@ export const api = {
     const response = await apiClient.post("/trending/refresh");
     return response.data;
   },
+
+  // Get new pairs with holder filtering (GeckoTerminal)
+  getNewPairsFeed: async (params: {
+    min_holders?: number;
+    max_top_10_percent?: number;
+    max_age_hours?: number;
+    require_boosted?: boolean;
+    min_liquidity?: number;
+    chain?: string;
+    limit?: number;
+  } = {}) => {
+    const response = await apiClient.get("/trending/new-pairs", { params });
+    return response.data;
+  },
 };
 
 export default api;

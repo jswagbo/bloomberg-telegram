@@ -23,6 +23,7 @@ from app.models.telegram import TelegramAccount, TelegramSource
 from app.services.trending.dexscreener_trending import trending_service
 from app.services.trending.mention_scanner import mention_scanner, TokenMentionSummary
 from app.services.trending.kol_wallets import kol_wallet_service
+from app.services.trending.new_pairs_service import new_pairs_service, NewPairToken
 
 logger = structlog.get_logger()
 
@@ -106,6 +107,51 @@ class TokenDetailResponse(BaseModel):
     
     # All human discussion messages
     messages: List[dict]
+
+
+class NewPairResponse(BaseModel):
+    """A new token pair with holder data"""
+    address: str
+    symbol: str
+    name: str
+    chain: str
+    price_usd: Optional[float]
+    price_change_24h: Optional[float]
+    price_change_1h: Optional[float]
+    volume_24h: Optional[float]
+    liquidity_usd: Optional[float]
+    market_cap: Optional[float]
+    
+    # Holder data
+    holder_count: int
+    top_10_percent: float
+    top_11_30_percent: float
+    top_31_50_percent: float
+    rest_percent: float
+    
+    # Metadata
+    age_hours: float
+    dex_name: str
+    is_boosted: bool
+    
+    image_url: Optional[str]
+    dexscreener_url: str
+    gecko_terminal_url: str
+    
+    # Telegram mentions
+    total_mentions: int
+    human_discussions: int
+    top_messages: List[dict]
+    kol_count: int
+
+
+class NewPairsFeedResponse(BaseModel):
+    """Response for new pairs feed"""
+    pairs: List[NewPairResponse]
+    total_pairs: int
+    filters_applied: dict
+    last_updated: str
+    messages_scanned: int
 
 
 # In-memory message cache (per source)
@@ -446,3 +492,143 @@ async def _get_all_messages(user_id: str, db: AsyncSession) -> List[dict]:
                 all_messages.extend(_message_cache[source_key])
     
     return all_messages
+
+
+# ============================================================================
+# NEW PAIRS ENDPOINT - Uses GeckoTerminal for holder filtering
+# ============================================================================
+
+@router.get("/new-pairs", response_model=NewPairsFeedResponse)
+async def get_new_pairs_feed(
+    min_holders: int = Query(50, ge=1, description="Minimum number of holders"),
+    max_top_10_percent: float = Query(40.0, ge=0, le=100, description="Max % held by top 10 wallets"),
+    max_age_hours: int = Query(24, ge=1, le=168, description="Max age in hours"),
+    require_boosted: bool = Query(False, description="Only show dex-paid tokens"),
+    min_liquidity: float = Query(1000, ge=0, description="Minimum liquidity in USD"),
+    chain: Optional[str] = Query(None, description="Filter by chain"),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get new token pairs with advanced filtering.
+    
+    This uses GeckoTerminal API for:
+    - New pools (launched in last 24h)
+    - Holder counts and distribution
+    
+    Filters:
+    - min_holders: Minimum 50 holders (default)
+    - max_top_10_percent: Top 10 wallets hold less than 40% (default)
+    - max_age_hours: Launched in last 24 hours (default)
+    - require_boosted: Only dex-paid tokens (optional)
+    - min_liquidity: Minimum $1000 liquidity (default)
+    """
+    chains = [chain] if chain else ["solana", "base", "bsc"]
+    
+    # 1. Get new pairs from GeckoTerminal with holder filtering
+    new_pairs = await new_pairs_service.get_new_pairs(
+        chains=chains,
+        min_holders=min_holders,
+        max_top_10_percent=max_top_10_percent,
+        max_age_hours=max_age_hours,
+        require_boosted=require_boosted,
+        min_liquidity=min_liquidity,
+        limit=limit,
+    )
+    
+    if not new_pairs:
+        return NewPairsFeedResponse(
+            pairs=[],
+            total_pairs=0,
+            filters_applied={
+                "min_holders": min_holders,
+                "max_top_10_percent": max_top_10_percent,
+                "max_age_hours": max_age_hours,
+                "require_boosted": require_boosted,
+                "min_liquidity": min_liquidity,
+            },
+            last_updated=datetime.utcnow().isoformat(),
+            messages_scanned=0,
+        )
+    
+    # 2. Get Telegram messages and scan for mentions
+    messages = await _get_all_messages(current_user.id, db)
+    
+    # 3. Scan messages for each new pair
+    token_dicts = [
+        {"address": p.address, "symbol": p.symbol, "chain": p.chain}
+        for p in new_pairs
+    ]
+    mention_results = mention_scanner.scan_messages_for_tokens(messages, token_dicts)
+    
+    # 4. Check for KOL activity
+    kol_results = {}
+    for pair in new_pairs:
+        token_messages = []
+        if pair.address in mention_results:
+            mentions = mention_results[pair.address]
+            token_messages = [{"text": m.text} for m in mentions.mentions]
+        
+        kol_summary = await kol_wallet_service.check_kol_activity(
+            pair.address, token_messages
+        )
+        kol_results[pair.address] = kol_summary
+    
+    # 5. Build response
+    response_pairs = []
+    
+    for pair in new_pairs:
+        mentions = mention_results.get(pair.address)
+        kol_data = kol_results.get(pair.address)
+        
+        # Get top human discussion messages
+        top_messages = []
+        if mentions:
+            human_msgs = [m for m in mentions.mentions if m.is_human_discussion]
+            top_messages = [m.to_dict() for m in human_msgs[:3]]
+        
+        response_pairs.append(NewPairResponse(
+            address=pair.address,
+            symbol=pair.symbol,
+            name=pair.name,
+            chain=pair.chain,
+            price_usd=pair.price_usd,
+            price_change_24h=pair.price_change_24h,
+            price_change_1h=pair.price_change_1h,
+            volume_24h=pair.volume_24h,
+            liquidity_usd=pair.liquidity_usd,
+            market_cap=pair.market_cap,
+            holder_count=pair.holder_count,
+            top_10_percent=pair.top_10_percent,
+            top_11_30_percent=pair.top_11_30_percent,
+            top_31_50_percent=pair.top_31_50_percent,
+            rest_percent=pair.rest_percent,
+            age_hours=pair.age_hours,
+            dex_name=pair.dex_name,
+            is_boosted=pair.is_boosted,
+            image_url=pair.image_url,
+            dexscreener_url=pair.dexscreener_url,
+            gecko_terminal_url=pair.gecko_terminal_url,
+            total_mentions=mentions.total_mentions if mentions else 0,
+            human_discussions=mentions.human_discussions if mentions else 0,
+            top_messages=top_messages,
+            kol_count=kol_data.total_kol_holders if kol_data else 0,
+        ))
+    
+    # Sort by holder count (more holders = more legitimate)
+    response_pairs.sort(key=lambda p: p.holder_count, reverse=True)
+    
+    return NewPairsFeedResponse(
+        pairs=response_pairs,
+        total_pairs=len(response_pairs),
+        filters_applied={
+            "min_holders": min_holders,
+            "max_top_10_percent": max_top_10_percent,
+            "max_age_hours": max_age_hours,
+            "require_boosted": require_boosted,
+            "min_liquidity": min_liquidity,
+        },
+        last_updated=datetime.utcnow().isoformat(),
+        messages_scanned=len(messages),
+    )

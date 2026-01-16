@@ -1,0 +1,418 @@
+"""
+New Pairs Discovery Service
+
+Uses GeckoTerminal API (free) to fetch new token pairs with holder filtering.
+
+Filters:
+- 50+ holders
+- Launched less than 24 hours ago
+- Top 10 holders hold less than 40%
+- Optionally: Dex paid (boosted on DexScreener)
+"""
+
+import httpx
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+import asyncio
+import structlog
+
+logger = structlog.get_logger()
+
+# Cache
+_new_pairs_cache: List[Dict[str, Any]] = []
+_cache_time: Optional[datetime] = None
+CACHE_DURATION = timedelta(minutes=2)  # Refresh frequently for new pairs
+
+
+@dataclass
+class NewPairToken:
+    """A newly discovered token pair"""
+    address: str
+    symbol: str
+    name: str
+    chain: str
+    price_usd: Optional[float]
+    price_change_24h: Optional[float]
+    price_change_1h: Optional[float]
+    volume_24h: Optional[float]
+    liquidity_usd: Optional[float]
+    market_cap: Optional[float]
+    
+    # Holder data (from GeckoTerminal)
+    holder_count: int
+    top_10_percent: float  # Percentage held by top 10
+    top_11_30_percent: float
+    top_31_50_percent: float
+    rest_percent: float
+    
+    # Metadata
+    pool_created_at: Optional[datetime]
+    age_hours: float
+    dex_name: str
+    is_boosted: bool  # Dex paid
+    
+    image_url: Optional[str]
+    dexscreener_url: str
+    gecko_terminal_url: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "address": self.address,
+            "symbol": self.symbol,
+            "name": self.name,
+            "chain": self.chain,
+            "price_usd": self.price_usd,
+            "price_change_24h": self.price_change_24h,
+            "price_change_1h": self.price_change_1h,
+            "volume_24h": self.volume_24h,
+            "liquidity_usd": self.liquidity_usd,
+            "market_cap": self.market_cap,
+            "holder_count": self.holder_count,
+            "top_10_percent": self.top_10_percent,
+            "top_11_30_percent": self.top_11_30_percent,
+            "top_31_50_percent": self.top_31_50_percent,
+            "rest_percent": self.rest_percent,
+            "pool_created_at": self.pool_created_at.isoformat() if self.pool_created_at else None,
+            "age_hours": self.age_hours,
+            "dex_name": self.dex_name,
+            "is_boosted": self.is_boosted,
+            "image_url": self.image_url,
+            "dexscreener_url": self.dexscreener_url,
+            "gecko_terminal_url": self.gecko_terminal_url,
+        }
+
+
+class NewPairsService:
+    """Service to discover new token pairs with filtering"""
+    
+    def __init__(self):
+        self.gecko_base_url = "https://api.geckoterminal.com/api/v2"
+        self.dexscreener_url = "https://api.dexscreener.com"
+        self._client: Optional[httpx.AsyncClient] = None
+        self._boosted_tokens: set = set()  # Cache of boosted token addresses
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"Accept": "application/json"}
+            )
+        return self._client
+    
+    def _normalize_chain(self, chain: str) -> str:
+        """Normalize chain names between APIs"""
+        chain_map = {
+            "eth": "ethereum",
+            "ethereum": "ethereum", 
+            "sol": "solana",
+            "solana": "solana",
+            "bsc": "bsc",
+            "bnb": "bsc",
+            "base": "base",
+            "arbitrum": "arbitrum",
+            "polygon": "polygon",
+        }
+        return chain_map.get(chain.lower(), chain.lower())
+    
+    def _gecko_chain_id(self, chain: str) -> str:
+        """Convert chain name to GeckoTerminal network ID"""
+        chain_map = {
+            "solana": "solana",
+            "ethereum": "eth",
+            "bsc": "bsc",
+            "base": "base",
+            "arbitrum": "arbitrum_one",
+            "polygon": "polygon_pos",
+        }
+        return chain_map.get(chain, chain)
+    
+    async def _fetch_boosted_tokens(self) -> set:
+        """Fetch list of boosted (dex paid) tokens from DexScreener"""
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"{self.dexscreener_url}/token-boosts/top/v1")
+            if resp.status_code == 200:
+                data = resp.json()
+                return {item.get("tokenAddress", "").lower() for item in data if item.get("tokenAddress")}
+        except Exception as e:
+            logger.warning("fetch_boosted_failed", error=str(e))
+        return set()
+    
+    async def _fetch_new_pools(self, chain: str) -> List[Dict[str, Any]]:
+        """Fetch new pools from GeckoTerminal"""
+        client = await self._get_client()
+        network = self._gecko_chain_id(chain)
+        pools = []
+        
+        try:
+            # Fetch new pools - this endpoint returns recently created pools
+            resp = await client.get(
+                f"{self.gecko_base_url}/networks/{network}/new_pools",
+                params={"page": 1}
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                pools = data.get("data", [])
+                logger.info("fetched_new_pools", chain=chain, count=len(pools))
+            else:
+                logger.warning("new_pools_fetch_failed", chain=chain, status=resp.status_code)
+                
+        except Exception as e:
+            logger.error("new_pools_error", chain=chain, error=str(e))
+        
+        return pools
+    
+    async def _fetch_token_info(self, chain: str, address: str) -> Optional[Dict[str, Any]]:
+        """Fetch token info including holder data from GeckoTerminal"""
+        client = await self._get_client()
+        network = self._gecko_chain_id(chain)
+        
+        try:
+            resp = await client.get(
+                f"{self.gecko_base_url}/networks/{network}/tokens/{address}/info"
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("data", {}).get("attributes", {})
+                
+        except Exception as e:
+            logger.warning("token_info_error", chain=chain, address=address[:10], error=str(e))
+        
+        return None
+    
+    def _parse_pool(self, pool_data: Dict[str, Any], chain: str, boosted_tokens: set) -> Optional[Dict[str, Any]]:
+        """Parse pool data from GeckoTerminal"""
+        try:
+            attrs = pool_data.get("attributes", {})
+            
+            # Get base token info
+            base_token = attrs.get("base_token_price_usd")
+            token_address = attrs.get("address", "")
+            
+            # Parse creation time
+            created_at_str = attrs.get("pool_created_at")
+            created_at = None
+            age_hours = 999
+            
+            if created_at_str:
+                try:
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(created_at.tzinfo) - created_at).total_seconds() / 3600
+                except:
+                    pass
+            
+            return {
+                "pool_address": token_address,
+                "name": attrs.get("name", "Unknown"),
+                "base_token_address": attrs.get("base_token_address", ""),
+                "base_token_symbol": attrs.get("base_token_symbol", "???"),
+                "base_token_name": attrs.get("base_token_name", "Unknown"),
+                "price_usd": float(attrs.get("base_token_price_usd") or 0) if attrs.get("base_token_price_usd") else None,
+                "price_change_24h": attrs.get("price_change_percentage", {}).get("h24"),
+                "price_change_1h": attrs.get("price_change_percentage", {}).get("h1"),
+                "volume_24h": float(attrs.get("volume_usd", {}).get("h24") or 0) if attrs.get("volume_usd", {}).get("h24") else None,
+                "liquidity_usd": float(attrs.get("reserve_in_usd") or 0) if attrs.get("reserve_in_usd") else None,
+                "fdv_usd": float(attrs.get("fdv_usd") or 0) if attrs.get("fdv_usd") else None,
+                "created_at": created_at,
+                "age_hours": age_hours,
+                "dex_name": attrs.get("dex_id", "unknown"),
+                "chain": chain,
+                "is_boosted": attrs.get("base_token_address", "").lower() in boosted_tokens,
+            }
+            
+        except Exception as e:
+            logger.warning("parse_pool_error", error=str(e))
+            return None
+    
+    async def get_new_pairs(
+        self,
+        chains: List[str] = None,
+        min_holders: int = 50,
+        max_top_10_percent: float = 40.0,
+        max_age_hours: int = 24,
+        require_boosted: bool = False,
+        min_liquidity: float = 1000,
+        limit: int = 50,
+        force_refresh: bool = False,
+    ) -> List[NewPairToken]:
+        """
+        Fetch new token pairs with filtering.
+        
+        Args:
+            chains: Chains to search (default: solana, base, bsc)
+            min_holders: Minimum number of holders (default: 50)
+            max_top_10_percent: Max % held by top 10 wallets (default: 40%)
+            max_age_hours: Max age in hours (default: 24)
+            require_boosted: Only show dex-paid tokens
+            min_liquidity: Minimum liquidity in USD
+            limit: Max results to return
+            force_refresh: Bypass cache
+        
+        Returns:
+            List of new pairs matching criteria
+        """
+        global _new_pairs_cache, _cache_time
+        
+        # Check cache
+        if not force_refresh and _cache_time and datetime.utcnow() - _cache_time < CACHE_DURATION:
+            if _new_pairs_cache:
+                logger.info("new_pairs_cache_hit", count=len(_new_pairs_cache))
+                return [NewPairToken(**p) for p in _new_pairs_cache[:limit]]
+        
+        if chains is None:
+            chains = ["solana", "base", "bsc"]
+        
+        # Fetch boosted tokens first
+        boosted_tokens = await self._fetch_boosted_tokens()
+        self._boosted_tokens = boosted_tokens
+        logger.info("fetched_boosted_tokens", count=len(boosted_tokens))
+        
+        all_pairs = []
+        
+        # Fetch new pools from each chain
+        for chain in chains:
+            pools = await self._fetch_new_pools(chain)
+            
+            for pool in pools:
+                parsed = self._parse_pool(pool, chain, boosted_tokens)
+                if not parsed:
+                    continue
+                
+                # Filter by age
+                if parsed["age_hours"] > max_age_hours:
+                    continue
+                
+                # Filter by liquidity
+                if parsed.get("liquidity_usd") and parsed["liquidity_usd"] < min_liquidity:
+                    continue
+                
+                # Filter by boosted if required
+                if require_boosted and not parsed["is_boosted"]:
+                    continue
+                
+                all_pairs.append(parsed)
+            
+            await asyncio.sleep(0.2)  # Rate limiting
+        
+        logger.info("pre_holder_filter", count=len(all_pairs))
+        
+        # Now fetch holder info for each token and filter
+        filtered_pairs = []
+        
+        for pair in all_pairs[:100]:  # Limit API calls
+            token_address = pair.get("base_token_address")
+            chain = pair.get("chain")
+            
+            if not token_address:
+                continue
+            
+            # Fetch holder info
+            token_info = await self._fetch_token_info(chain, token_address)
+            
+            if token_info:
+                holders = token_info.get("holders", {})
+                holder_count = holders.get("count", 0) or 0
+                
+                # Get distribution percentages
+                distribution = holders.get("distribution_percentage", {})
+                top_10 = float(distribution.get("top_10", 100) or 100)
+                top_11_30 = float(distribution.get("11_to_30", 0) or 0)
+                top_31_50 = float(distribution.get("31_to_50", 0) or 0)
+                rest = float(distribution.get("rest", 0) or 0)
+                
+                logger.debug(
+                    "holder_info",
+                    symbol=pair.get("base_token_symbol"),
+                    holders=holder_count,
+                    top_10=top_10
+                )
+                
+                # Apply holder filters
+                if holder_count < min_holders:
+                    continue
+                
+                if top_10 > max_top_10_percent:
+                    continue
+                
+                # Create the token object
+                new_pair = NewPairToken(
+                    address=token_address,
+                    symbol=pair.get("base_token_symbol", "???"),
+                    name=pair.get("base_token_name", "Unknown"),
+                    chain=chain,
+                    price_usd=pair.get("price_usd"),
+                    price_change_24h=pair.get("price_change_24h"),
+                    price_change_1h=pair.get("price_change_1h"),
+                    volume_24h=pair.get("volume_24h"),
+                    liquidity_usd=pair.get("liquidity_usd"),
+                    market_cap=pair.get("fdv_usd"),
+                    holder_count=holder_count,
+                    top_10_percent=top_10,
+                    top_11_30_percent=top_11_30,
+                    top_31_50_percent=top_31_50,
+                    rest_percent=rest,
+                    pool_created_at=pair.get("created_at"),
+                    age_hours=pair.get("age_hours", 0),
+                    dex_name=pair.get("dex_name", "unknown"),
+                    is_boosted=pair.get("is_boosted", False),
+                    image_url=token_info.get("image_url"),
+                    dexscreener_url=f"https://dexscreener.com/{chain}/{token_address}",
+                    gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/pools/{pair.get('pool_address', token_address)}",
+                )
+                
+                filtered_pairs.append(new_pair)
+            
+            await asyncio.sleep(0.1)  # Rate limiting for token info calls
+        
+        # Sort by holder count (more holders = more legitimate)
+        filtered_pairs.sort(key=lambda x: x.holder_count, reverse=True)
+        
+        # Cache results
+        _new_pairs_cache = [p.to_dict() for p in filtered_pairs[:limit]]
+        _cache_time = datetime.utcnow()
+        
+        logger.info("new_pairs_filtered", count=len(filtered_pairs))
+        
+        return filtered_pairs[:limit]
+    
+    async def get_token_info(self, address: str, chain: str) -> Optional[NewPairToken]:
+        """Get info for a specific token"""
+        token_info = await self._fetch_token_info(chain, address)
+        
+        if not token_info:
+            return None
+        
+        holders = token_info.get("holders", {})
+        distribution = holders.get("distribution_percentage", {})
+        
+        return NewPairToken(
+            address=address,
+            symbol=token_info.get("symbol", "???"),
+            name=token_info.get("name", "Unknown"),
+            chain=chain,
+            price_usd=None,
+            price_change_24h=None,
+            price_change_1h=None,
+            volume_24h=None,
+            liquidity_usd=None,
+            market_cap=None,
+            holder_count=holders.get("count", 0) or 0,
+            top_10_percent=float(distribution.get("top_10", 0) or 0),
+            top_11_30_percent=float(distribution.get("11_to_30", 0) or 0),
+            top_31_50_percent=float(distribution.get("31_to_50", 0) or 0),
+            rest_percent=float(distribution.get("rest", 0) or 0),
+            pool_created_at=None,
+            age_hours=0,
+            dex_name="unknown",
+            is_boosted=address.lower() in self._boosted_tokens,
+            image_url=token_info.get("image_url"),
+            dexscreener_url=f"https://dexscreener.com/{chain}/{address}",
+            gecko_terminal_url=f"https://www.geckoterminal.com/{self._gecko_chain_id(chain)}/tokens/{address}",
+        )
+
+
+# Singleton instance
+new_pairs_service = NewPairsService()

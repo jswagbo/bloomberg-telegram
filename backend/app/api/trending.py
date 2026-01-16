@@ -25,6 +25,7 @@ from app.services.trending.mention_scanner import mention_scanner, TokenMentionS
 from app.services.trending.kol_wallets import kol_wallet_service
 from app.services.trending.new_pairs_service import new_pairs_service, NewPairToken
 from app.services.trending.chat_summarizer import chat_summarizer, TokenChatAnalysis
+from app.services.trending.telegram_token_scanner import telegram_token_scanner
 
 logger = structlog.get_logger()
 
@@ -505,9 +506,9 @@ async def refresh_messages(
                 errors.append(error_msg)
                 logger.error("refresh_source_error", source=source.name, error=str(e))
     
-    global _cache_time, _last_scan_time
+    global _cache_time
     _cache_time = datetime.utcnow()
-    _last_scan_time = _cache_time  # Track actual scan time
+    _last_scan_time = _cache_time  # Already declared global above
     
     logger.info("refresh_complete", 
                 messages=total_messages, 
@@ -764,4 +765,98 @@ async def get_new_pairs_feed(
         },
         last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
         messages_scanned=len(messages),
+    )
+
+
+# ============================================================================
+# TELEGRAM TOKENS ENDPOINT - Scans Telegram for ALL tokens mentioned
+# ============================================================================
+
+class TelegramTokenResponse(BaseModel):
+    """A token found in Telegram messages"""
+    address: str
+    chain: str
+    symbol: str
+    name: str
+    mention_count: int
+    chat_count: int
+    chats: List[str]
+    sample_messages: List[str]
+    price_usd: Optional[float]
+    market_cap: Optional[float]
+    liquidity_usd: Optional[float]
+    price_change_24h: Optional[float]
+    volume_24h: Optional[float]
+    dexscreener_url: str
+    image_url: Optional[str]
+
+
+class TelegramTokensFeedResponse(BaseModel):
+    """Response for telegram tokens feed"""
+    tokens: List[TelegramTokenResponse]
+    total_found: int
+    messages_scanned: int
+    last_updated: str
+
+
+@router.get("/telegram-tokens", response_model=TelegramTokensFeedResponse)
+async def get_telegram_tokens_feed(
+    min_mentions: int = Query(1, ge=1, description="Minimum mentions to show"),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Scan Telegram messages and find ALL tokens mentioned.
+    
+    This is the reverse of the new-pairs endpoint:
+    - Instead of finding trending tokens and checking Telegram
+    - This finds tokens IN Telegram and enriches with market data
+    
+    This is what you want if you see tokens in your chats that aren't showing up.
+    """
+    # 1. Get all messages (last 72 hours)
+    messages = await _get_all_messages(current_user.id, db, lookback_hours=72)
+    
+    if not messages:
+        return TelegramTokensFeedResponse(
+            tokens=[],
+            total_found=0,
+            messages_scanned=0,
+            last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
+        )
+    
+    # 2. Scan messages for token addresses and enrich
+    found_tokens = await telegram_token_scanner.scan_and_enrich(
+        messages=messages,
+        min_mentions=min_mentions,
+        limit=limit,
+    )
+    
+    # 3. Build response
+    response_tokens = []
+    for token in found_tokens:
+        response_tokens.append(TelegramTokenResponse(
+            address=token.address,
+            chain=token.chain,
+            symbol=token.symbol or "???",
+            name=token.name or "Unknown Token",
+            mention_count=token.mention_count,
+            chat_count=len(token.chats),
+            chats=list(token.chats)[:5],
+            sample_messages=token.sample_messages[:3],
+            price_usd=token.price_usd,
+            market_cap=token.market_cap,
+            liquidity_usd=token.liquidity_usd,
+            price_change_24h=token.price_change_24h,
+            volume_24h=token.volume_24h,
+            dexscreener_url=token.dexscreener_url or f"https://dexscreener.com/search?q={token.address}",
+            image_url=token.image_url,
+        ))
+    
+    return TelegramTokensFeedResponse(
+        tokens=response_tokens,
+        total_found=len(found_tokens),
+        messages_scanned=len(messages),
+        last_updated=(_last_scan_time or datetime.utcnow()).isoformat(),
     )

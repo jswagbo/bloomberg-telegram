@@ -23,6 +23,25 @@ import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import api from "@/lib/api";
 
+// Telegram Token - found directly in chat messages
+interface TelegramToken {
+  address: string;
+  chain: string;
+  symbol: string;
+  name: string;
+  mention_count: number;
+  chat_count: number;
+  chats: string[];
+  sample_messages: string[];
+  price_usd: number | null;
+  market_cap: number | null;
+  liquidity_usd: number | null;
+  price_change_24h: number | null;
+  volume_24h: number | null;
+  dexscreener_url: string;
+  image_url: string | null;
+}
+
 interface ChatSummary {
   chat_name: string;
   summary: string;
@@ -69,6 +88,129 @@ interface NewPairToken {
   chat_summaries: ChatSummary[];  // Per-chat summaries
   kol_count: number;
 }
+
+// Simple card for tokens found in Telegram
+function TelegramTokenCard({ token }: { token: TelegramToken }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyAddress = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(token.address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const formatMarketCap = (mcap: number | null) => {
+    if (!mcap) return "—";
+    if (mcap >= 1_000_000) return `$${(mcap / 1_000_000).toFixed(1)}M`;
+    if (mcap >= 1_000) return `$${(mcap / 1_000).toFixed(0)}K`;
+    return `$${mcap.toFixed(0)}`;
+  };
+
+  const priceChange = token.price_change_24h;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-terminal-card border border-primary-600/30 rounded-xl overflow-hidden hover:border-primary-600/50 transition-all"
+    >
+      <a href={token.dexscreener_url} target="_blank" rel="noopener noreferrer">
+        {/* Header */}
+        <div className="px-4 py-3 flex items-center justify-between bg-primary-600/10">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold bg-primary-600/20 text-primary-400">
+              {token.image_url ? (
+                <img src={token.image_url} alt={token.symbol} className="w-full h-full rounded-lg object-cover" />
+              ) : (
+                token.symbol[0] || "?"
+              )}
+            </div>
+            
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold">${token.symbol}</h3>
+                <span className={cn(
+                  "text-xs px-1.5 py-0.5 rounded",
+                  token.chain === "solana" ? "bg-purple-500/20 text-purple-400" :
+                  token.chain === "base" ? "bg-blue-500/20 text-blue-400" :
+                  "bg-yellow-500/20 text-yellow-400"
+                )}>
+                  {token.chain}
+                </span>
+              </div>
+              <p className="text-xs text-terminal-muted">{token.name}</p>
+            </div>
+          </div>
+          
+          <div className="text-right">
+            <div className="font-bold text-lg">{formatMarketCap(token.market_cap)}</div>
+            {priceChange !== null && (
+              <div className={cn(
+                "text-sm font-medium",
+                priceChange >= 0 ? "text-bullish" : "text-bearish"
+              )}>
+                {priceChange >= 0 ? "+" : ""}{priceChange?.toFixed(1)}%
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="px-4 py-2 grid grid-cols-3 gap-2 border-b border-terminal-border">
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-1 text-primary-400">
+              <MessageSquare className="w-3 h-3" />
+              <span className="text-sm font-bold">{token.mention_count}</span>
+            </div>
+            <p className="text-[10px] text-terminal-muted">Mentions</p>
+          </div>
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-1 text-blue-400">
+              <Users className="w-3 h-3" />
+              <span className="text-sm font-bold">{token.chat_count}</span>
+            </div>
+            <p className="text-[10px] text-terminal-muted">Chats</p>
+          </div>
+          <div className="text-center">
+            <span className="text-sm font-bold text-green-400">
+              {token.liquidity_usd ? `$${(token.liquidity_usd / 1000).toFixed(0)}K` : "—"}
+            </span>
+            <p className="text-[10px] text-terminal-muted">Liquidity</p>
+          </div>
+        </div>
+
+        {/* Sample Message */}
+        {token.sample_messages.length > 0 && (
+          <div className="p-4">
+            <div className="bg-terminal-bg/50 rounded-lg p-3">
+              <p className="text-sm text-terminal-text leading-relaxed line-clamp-2">
+                "{token.sample_messages[0]}"
+              </p>
+              <p className="text-xs text-terminal-muted mt-1">
+                — from {token.chats[0] || "Telegram"}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="px-4 py-2 flex items-center justify-between border-t border-terminal-border bg-terminal-bg/30">
+          <button
+            onClick={copyAddress}
+            className="flex items-center gap-1 text-xs text-terminal-muted hover:text-terminal-text"
+          >
+            {copied ? <Check className="w-3 h-3 text-bullish" /> : <Copy className="w-3 h-3" />}
+            {token.address.slice(0, 6)}...{token.address.slice(-4)}
+          </button>
+          <ExternalLink className="w-4 h-4 text-terminal-muted" />
+        </div>
+      </a>
+    </motion.div>
+  );
+}
+
 
 function NewPairCard({ token }: { token: NewPairToken }) {
   const [copied, setCopied] = useState(false);
@@ -391,22 +533,17 @@ function NewPairCard({ token }: { token: NewPairToken }) {
 }
 
 export function TrendingFeed() {
-  const [chainFilter, setChainFilter] = useState<string | null>(null);
-  const [minHolders, setMinHolders] = useState(25);
-  const [maxTop10, setMaxTop10] = useState(50);
+  const [minMentions, setMinMentions] = useState(1);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastScan, setLastScan] = useState<Date | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const queryClient = useQueryClient();
 
+  // Use telegram-tokens endpoint - scans Telegram for ALL tokens
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["new-pairs-feed", chainFilter, minHolders, maxTop10],
-    queryFn: () => api.getNewPairsFeed({
-      chain: chainFilter || "solana",  // Default to Solana for launchpad tokens
-      min_holders: minHolders,
-      max_top_10_percent: maxTop10,
-      max_age_hours: 72,  // 72 hours of messages
-      min_liquidity: 500,
+    queryKey: ["telegram-tokens-feed", minMentions],
+    queryFn: () => api.getTelegramTokensFeed({
+      min_mentions: minMentions,
       limit: 50,
     }),
     staleTime: 30000,  // 30 seconds
@@ -418,7 +555,7 @@ export function TrendingFeed() {
     mutationFn: () => api.refreshTrendingMessages(),
     onSuccess: (result) => {
       setLastScan(new Date());
-      queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
+      queryClient.invalidateQueries({ queryKey: ["telegram-tokens-feed"] });
     },
   });
 
@@ -447,7 +584,7 @@ export function TrendingFeed() {
         refreshMutation.mutate(undefined, {
           onSuccess: () => {
             setLastScan(new Date());
-            queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
+            queryClient.invalidateQueries({ queryKey: ["telegram-tokens-feed"] });
           }
         });
       }
@@ -459,7 +596,7 @@ export function TrendingFeed() {
         refreshMutation.mutate(undefined, {
           onSuccess: () => {
             setLastScan(new Date());
-            queryClient.invalidateQueries({ queryKey: ["new-pairs-feed"] });
+            queryClient.invalidateQueries({ queryKey: ["telegram-tokens-feed"] });
           }
         });
       }
@@ -495,9 +632,9 @@ export function TrendingFeed() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold">Migrated Tokens with Telegram Buzz</h2>
+          <h2 className="text-xl font-bold">Tokens Found in Telegram</h2>
           <p className="text-sm text-terminal-muted">
-            pump.fun • bags.fm • bonk → Only showing tokens mentioned in your Telegram chats
+            Scanning your Telegram chats for token addresses and mentions
           </p>
         </div>
         
@@ -557,51 +694,19 @@ export function TrendingFeed() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* Chain Filter */}
-        <div className="flex items-center gap-2 bg-terminal-bg rounded-lg p-1">
-          {["all", "solana", "base", "bsc"].map((chain) => (
-            <button
-              key={chain}
-              onClick={() => setChainFilter(chain === "all" ? null : chain)}
-              className={cn(
-                "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
-                (chain === "all" && !chainFilter) || chainFilter === chain
-                  ? "bg-primary-600 text-white"
-                  : "text-terminal-muted hover:text-terminal-text"
-              )}
-            >
-              {chain === "all" ? "All Chains" : chain.charAt(0).toUpperCase() + chain.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {/* Holder Filter */}
+        {/* Min Mentions Filter */}
         <div className="flex items-center gap-2">
-          <span className="text-sm text-terminal-muted">Min Holders:</span>
+          <span className="text-sm text-terminal-muted">Min Mentions:</span>
           <select
-            value={minHolders}
-            onChange={(e) => setMinHolders(Number(e.target.value))}
+            value={minMentions}
+            onChange={(e) => setMinMentions(Number(e.target.value))}
             className="bg-terminal-bg border border-terminal-border rounded-lg px-3 py-1.5 text-sm"
           >
-            <option value={25}>25+</option>
-            <option value={50}>50+</option>
-            <option value={100}>100+</option>
-            <option value={200}>200+</option>
-          </select>
-        </div>
-
-        {/* Top 10 Filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-terminal-muted">Top 10 Max:</span>
-          <select
-            value={maxTop10}
-            onChange={(e) => setMaxTop10(Number(e.target.value))}
-            className="bg-terminal-bg border border-terminal-border rounded-lg px-3 py-1.5 text-sm"
-          >
-            <option value={30}>30%</option>
-            <option value={40}>40%</option>
-            <option value={50}>50%</option>
-            <option value={60}>60%</option>
+            <option value={1}>1+</option>
+            <option value={2}>2+</option>
+            <option value={3}>3+</option>
+            <option value={5}>5+</option>
+            <option value={10}>10+</option>
           </select>
         </div>
       </div>
@@ -609,7 +714,7 @@ export function TrendingFeed() {
       {/* Stats */}
       {data && (
         <div className="flex flex-wrap items-center gap-4 text-sm text-terminal-muted">
-          <span className="font-medium text-primary-400">{data.total_pairs} tokens found</span>
+          <span className="font-medium text-primary-400">{data.total_found} tokens found</span>
           <span>•</span>
           <span>{data.messages_scanned} Telegram messages scanned</span>
           <span>•</span>
@@ -632,13 +737,13 @@ export function TrendingFeed() {
             <div key={i} className="bg-terminal-card border border-terminal-border rounded-xl h-64 animate-pulse" />
           ))}
         </div>
-      ) : data?.pairs?.length === 0 ? (
+      ) : data?.tokens?.length === 0 ? (
         <div className="text-center py-12 bg-terminal-card border border-terminal-border rounded-xl">
           <MessageSquare className="w-12 h-12 text-terminal-muted mx-auto mb-4" />
-          <h3 className="font-semibold mb-2">No Tokens with Telegram Buzz</h3>
+          <h3 className="font-semibold mb-2">No Tokens Found</h3>
           <p className="text-sm text-terminal-muted mb-4 max-w-md mx-auto">
-            No migrated tokens have been mentioned in your Telegram chats (last 72 hours).
-            Make sure you have Telegram sources connected and hit Refresh.
+            No token addresses found in your Telegram messages (last 72 hours).
+            Make sure you have Telegram sources connected and click Scan Telegram.
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             <button
@@ -656,13 +761,13 @@ export function TrendingFeed() {
             </a>
           </div>
           <p className="text-xs text-terminal-muted mt-4">
-            {data?.messages_scanned || 0} messages scanned • Looking for pump.fun, bags.fm, bonk tokens
+            {data?.messages_scanned || 0} messages scanned • Looking for token addresses
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data?.pairs?.map((token: NewPairToken) => (
-            <NewPairCard key={`${token.chain}-${token.address}`} token={token} />
+          {data?.tokens?.map((token: TelegramToken) => (
+            <TelegramTokenCard key={`${token.chain}-${token.address}`} token={token} />
           ))}
         </div>
       )}

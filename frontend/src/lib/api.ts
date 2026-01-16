@@ -306,6 +306,15 @@ export const api = {
     const response = await apiClient.get("/trending/new-pairs", { params });
     return response.data;
   },
+
+  // Get tokens found IN Telegram messages (scans messages for addresses)
+  getTelegramTokensFeed: async (params: {
+    min_mentions?: number;
+    limit?: number;
+  } = {}) => {
+    const response = await apiClient.get("/trending/telegram-tokens", { params });
+    return response.data;
+  },
 };
 
 export default api;

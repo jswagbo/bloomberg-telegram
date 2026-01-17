@@ -258,20 +258,21 @@ class ContextualScanner:
             token.summary = f"Token shared {token.mention_count} times but no detailed discussion found."
             return token
         
-        # Prepare prompt
-        sample = discussion_texts[:20]  # Limit to 20 messages
+        # Prepare prompt - request concise plain text
+        sample = discussion_texts[:15]  # Limit to 15 messages
         messages_text = "\n".join([f"- {m}" for m in sample])
         
-        prompt = f"""Analyze these Telegram chat messages discussing the token ${token.symbol}:
+        prompt = f"""You are analyzing crypto Telegram chat messages about ${token.symbol}.
 
+Messages:
 {messages_text}
 
-Based on these messages, provide:
-1. A 2-3 sentence summary of what people are saying
-2. The overall sentiment (bullish/bearish/neutral/mixed)
-3. Any specific opinions, calls, or warnings mentioned
+Write a 2-3 sentence summary of what traders are saying. Include:
+- The overall vibe (bullish/bearish/cautious)
+- Any specific price targets, warnings, or calls mentioned
+- Key opinions or concerns
 
-Focus on actual opinions and insights, not just mentions. Be specific about what traders are saying."""
+IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. Just 2-3 natural sentences summarizing the discussion."""
 
         try:
             client = await self._get_client()
@@ -294,13 +295,23 @@ Focus on actual opinions and insights, not just mentions. Be specific about what
                 result = response.json()
                 summary = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if summary:
-                    token.summary = summary.strip()
+                    # Clean up any markdown formatting
+                    clean_summary = summary.strip()
+                    clean_summary = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_summary)  # Remove **bold**
+                    clean_summary = re.sub(r'\*([^*]+)\*', r'\1', clean_summary)  # Remove *italic*
+                    clean_summary = re.sub(r'^#+\s*', '', clean_summary, flags=re.MULTILINE)  # Remove headers
+                    clean_summary = re.sub(r'^\d+\.\s*', '', clean_summary, flags=re.MULTILINE)  # Remove numbered lists
+                    clean_summary = re.sub(r'^[-•]\s*', '', clean_summary, flags=re.MULTILINE)  # Remove bullet points
+                    clean_summary = re.sub(r'\n+', ' ', clean_summary)  # Join multiple lines
+                    clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()  # Normalize spaces
                     
-                    # Extract sentiment
+                    token.summary = clean_summary[:500]  # Limit length
+                    
+                    # Extract sentiment from the raw response
                     summary_lower = summary.lower()
-                    if 'bullish' in summary_lower:
+                    if 'bullish' in summary_lower or 'optimistic' in summary_lower or 'positive' in summary_lower:
                         token.sentiment = 'bullish'
-                    elif 'bearish' in summary_lower:
+                    elif 'bearish' in summary_lower or 'cautious' in summary_lower or 'warning' in summary_lower or 'scam' in summary_lower:
                         token.sentiment = 'bearish'
                     elif 'mixed' in summary_lower:
                         token.sentiment = 'mixed'

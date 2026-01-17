@@ -242,7 +242,11 @@ class ContextualScanner:
         
         if not GROQ_API_KEY:
             logger.warning("no_groq_key", symbol=token.symbol)
-            token.summary = f"Mentioned {token.mention_count} times across {len(token.chats)} chats."
+            # Generate a basic summary without AI
+            chat_names = ", ".join(list(token.chats)[:3])
+            if len(token.chats) > 3:
+                chat_names += f" and {len(token.chats) - 3} more"
+            token.summary = f"Discussed {token.mention_count} times in {chat_names}. Connect Groq API for AI summaries."
             return token
         
         if not discussions:
@@ -334,10 +338,37 @@ IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. 
                         
         except Exception as e:
             logger.error("summary_failed", symbol=token.symbol, error=str(e), error_type=type(e).__name__)
-            # Provide a meaningful fallback with available info
-            token.summary = f"Active in {len(token.chats)} chats with {len(discussion_texts)} discussion messages. Check the chats for details."
+            # Generate rule-based summary as fallback
+            token.summary = self._generate_rule_based_summary(token, discussion_texts)
         
         return token
+    
+    def _generate_rule_based_summary(self, token: TokenDiscussion, texts: List[str]) -> str:
+        """Generate a simple rule-based summary when AI is unavailable."""
+        if not texts:
+            return f"Mentioned {token.mention_count} times in {len(token.chats)} chats."
+        
+        # Look for sentiment keywords
+        all_text = " ".join(texts).lower()
+        
+        bullish_words = ['moon', 'pump', 'buy', 'bullish', 'gem', 'ape', '100x', 'early', 'launch']
+        bearish_words = ['dump', 'rug', 'scam', 'sell', 'bearish', 'dead', 'avoid', 'careful']
+        
+        bullish_count = sum(1 for w in bullish_words if w in all_text)
+        bearish_count = sum(1 for w in bearish_words if w in all_text)
+        
+        if bullish_count > bearish_count:
+            sentiment = "Generally positive sentiment"
+            token.sentiment = "bullish"
+        elif bearish_count > bullish_count:
+            sentiment = "Some cautionary mentions"
+            token.sentiment = "bearish"
+        else:
+            sentiment = "Mixed or neutral sentiment"
+            token.sentiment = "neutral"
+        
+        chat_list = ", ".join(list(token.chats)[:2])
+        return f"{sentiment} across {len(token.chats)} chats ({chat_list}). {len(texts)} discussion messages found."
     
     async def scan(
         self,

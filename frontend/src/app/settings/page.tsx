@@ -138,13 +138,7 @@ export default function SettingsPage() {
             ))}
           </div>
         ) : (
-          <div className="text-center py-8">
-            <MessageSquare className="w-12 h-12 mx-auto text-terminal-muted mb-3" />
-            <p className="text-terminal-muted mb-2">No Telegram account connected</p>
-            <p className="text-xs text-terminal-muted">
-              Connect your Telegram account to select channels to monitor
-            </p>
-          </div>
+          <TelegramConnectFlow onSuccess={() => queryClient.invalidateQueries({ queryKey: ["telegram-accounts"] })} />
         )}
       </motion.div>
 
@@ -361,6 +355,40 @@ function TelegramAccountCard({
   onToggleAddSource: () => void;
 }) {
   const queryClient = useQueryClient();
+  const [showReconnectConfirm, setShowReconnectConfirm] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+
+  // Check session health on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const result = await api.refreshTrendingMessages();
+        if (result?.errors?.length > 0 && result.errors[0].includes("session may have expired")) {
+          setSessionError("Session expired - click Reconnect to fix");
+        } else if (result?.messages > 0) {
+          setSessionError(null);
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+    };
+    checkSession();
+  }, []);
+
+  // Delete account mutation (for reconnect)
+  const deleteAccountMutation = useMutation({
+    mutationFn: () => api.deleteTelegramAccount(account.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["telegram-accounts"] });
+      setShowReconnectConfirm(false);
+      // Show success and reload to show "Connect Telegram" UI
+      alert("Telegram disconnected. The page will reload - you can then reconnect your Telegram account.");
+      window.location.reload();
+    },
+    onError: (error: any) => {
+      alert(`Failed to disconnect: ${error?.message || "Unknown error"}`);
+    },
+  });
 
   // Fetch sources for this account
   const { data: sources, isLoading: sourcesLoading, refetch: refetchSources } = useQuery({
@@ -415,7 +443,54 @@ function TelegramAccountCard({
   };
 
   return (
-    <div className="border border-terminal-border rounded-lg overflow-hidden">
+    <div className={cn(
+      "border rounded-lg overflow-hidden",
+      sessionError ? "border-orange-500/50" : "border-terminal-border"
+    )}>
+      {/* Session Error Banner */}
+      {sessionError && (
+        <div className="px-4 py-2 bg-orange-500/20 border-b border-orange-500/30 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-orange-400 text-sm">
+            <AlertCircle className="w-4 h-4" />
+            <span>{sessionError}</span>
+          </div>
+          <button
+            onClick={() => setShowReconnectConfirm(true)}
+            className="px-3 py-1 bg-orange-500 hover:bg-orange-600 text-white text-xs font-medium rounded transition-colors"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
+
+      {/* Reconnect Confirmation Modal */}
+      {showReconnectConfirm && (
+        <div className="px-4 py-3 bg-terminal-bg border-b border-terminal-border">
+          <p className="text-sm mb-3">
+            This will disconnect your Telegram and require you to sign in again with your phone number.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => deleteAccountMutation.mutate()}
+              disabled={deleteAccountMutation.isPending}
+              className="flex-1 px-3 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded transition-colors disabled:opacity-50"
+            >
+              {deleteAccountMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin mx-auto" />
+              ) : (
+                "Yes, Reconnect"
+              )}
+            </button>
+            <button
+              onClick={() => setShowReconnectConfirm(false)}
+              className="flex-1 px-3 py-2 bg-terminal-border hover:bg-terminal-border/80 text-terminal-text text-sm font-medium rounded transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Account Header */}
       <button
         onClick={onToggle}
@@ -424,7 +499,7 @@ function TelegramAccountCard({
         <div className="flex items-center gap-3">
           <div className={cn(
             "w-2 h-2 rounded-full",
-            account.is_connected ? "bg-bullish" : "bg-terminal-muted"
+            sessionError ? "bg-orange-500" : account.is_connected ? "bg-bullish" : "bg-terminal-muted"
           )} />
           <span className="font-medium">{account.session_name}</span>
           {sources && (
@@ -508,6 +583,17 @@ function TelegramAccountCard({
               )}
 
               {/* Add Source Button / Dialog List */}
+              {/* Reconnect button - always visible */}
+              <div className="mt-4 pt-4 border-t border-terminal-border">
+                <button
+                  onClick={() => setShowReconnectConfirm(true)}
+                  className="w-full flex items-center justify-center gap-2 py-2 text-sm text-orange-400 hover:text-orange-300 hover:bg-orange-500/10 rounded-lg transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Reconnect Telegram Session
+                </button>
+              </div>
+
               {showAddSource ? (
                 <div className="mt-4 p-4 bg-terminal-bg rounded-lg border border-terminal-border">
                   <div className="flex items-center justify-between mb-3">
@@ -579,6 +665,208 @@ function TelegramAccountCard({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// Telegram Connect Flow Component
+function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
+  const [step, setStep] = useState<"start" | "code" | "2fa">("start");
+  const [formData, setFormData] = useState({
+    apiId: "",
+    apiHash: "",
+    phone: "",
+    code: "",
+    password: "",
+  });
+  const [sessionName, setSessionName] = useState("");
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleStartAuth = async () => {
+    setError("");
+    setIsLoading(true);
+    try {
+      const result = await api.startTelegramAuth(
+        parseInt(formData.apiId),
+        formData.apiHash,
+        formData.phone
+      );
+      setSessionName(result.session_name);
+      if (result.status === "awaiting_code") {
+        setStep("code");
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || "Failed to start auth");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifyCode = async () => {
+    setError("");
+    setIsLoading(true);
+    try {
+      const result = await api.verifyTelegramCode(sessionName, formData.code);
+      if (result.status === "awaiting_2fa") {
+        setStep("2fa");
+      } else if (result.status === "completed") {
+        await handleComplete();
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || "Invalid code");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerify2FA = async () => {
+    setError("");
+    setIsLoading(true);
+    try {
+      const result = await api.verifyTelegram2FA(sessionName, formData.password);
+      if (result.status === "completed") {
+        await handleComplete();
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || "Invalid password");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    try {
+      await api.completeTelegramAuth(
+        sessionName,
+        parseInt(formData.apiId),
+        formData.apiHash,
+        formData.phone
+      );
+      onSuccess();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || err.message || "Failed to complete auth");
+    }
+  };
+
+  return (
+    <div className="text-center py-6">
+      <MessageSquare className="w-12 h-12 mx-auto text-terminal-muted mb-3" />
+      
+      {step === "start" && (
+        <>
+          <p className="text-terminal-muted mb-4">Connect your Telegram to monitor channels</p>
+          
+          <div className="text-left space-y-3 max-w-sm mx-auto">
+            {error && (
+              <div className="p-3 bg-bearish/20 border border-bearish/30 rounded-lg text-bearish text-sm">
+                {error}
+              </div>
+            )}
+            
+            <div className="text-xs text-terminal-muted mb-2">
+              Get your API credentials from{" "}
+              <a href="https://my.telegram.org/apps" target="_blank" rel="noopener noreferrer" className="text-primary-400 hover:underline">
+                my.telegram.org/apps
+              </a>
+            </div>
+            
+            <input
+              type="text"
+              placeholder="API ID (e.g., 12345678)"
+              value={formData.apiId}
+              onChange={(e) => setFormData({ ...formData, apiId: e.target.value })}
+              className="w-full px-4 py-2.5 bg-terminal-bg border border-terminal-border rounded-lg focus:border-primary-600 focus:outline-none text-sm"
+            />
+            <input
+              type="text"
+              placeholder="API Hash"
+              value={formData.apiHash}
+              onChange={(e) => setFormData({ ...formData, apiHash: e.target.value })}
+              className="w-full px-4 py-2.5 bg-terminal-bg border border-terminal-border rounded-lg focus:border-primary-600 focus:outline-none text-sm"
+            />
+            <input
+              type="tel"
+              placeholder="Phone (+1234567890)"
+              value={formData.phone}
+              onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+              className="w-full px-4 py-2.5 bg-terminal-bg border border-terminal-border rounded-lg focus:border-primary-600 focus:outline-none text-sm"
+            />
+            
+            <button
+              onClick={handleStartAuth}
+              disabled={isLoading || !formData.apiId || !formData.apiHash || !formData.phone}
+              className="w-full py-2.5 bg-primary-600 hover:bg-primary-700 disabled:bg-terminal-border disabled:text-terminal-muted text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              Connect Telegram
+            </button>
+          </div>
+        </>
+      )}
+
+      {step === "code" && (
+        <>
+          <p className="text-terminal-muted mb-4">Enter the code sent to your Telegram</p>
+          
+          <div className="text-left space-y-3 max-w-sm mx-auto">
+            {error && (
+              <div className="p-3 bg-bearish/20 border border-bearish/30 rounded-lg text-bearish text-sm">
+                {error}
+              </div>
+            )}
+            
+            <input
+              type="text"
+              placeholder="Verification code"
+              value={formData.code}
+              onChange={(e) => setFormData({ ...formData, code: e.target.value })}
+              className="w-full px-4 py-2.5 bg-terminal-bg border border-terminal-border rounded-lg focus:border-primary-600 focus:outline-none text-sm text-center text-2xl tracking-widest"
+              maxLength={6}
+            />
+            
+            <button
+              onClick={handleVerifyCode}
+              disabled={isLoading || !formData.code}
+              className="w-full py-2.5 bg-primary-600 hover:bg-primary-700 disabled:bg-terminal-border disabled:text-terminal-muted text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              Verify Code
+            </button>
+          </div>
+        </>
+      )}
+
+      {step === "2fa" && (
+        <>
+          <p className="text-terminal-muted mb-4">Enter your 2FA password</p>
+          
+          <div className="text-left space-y-3 max-w-sm mx-auto">
+            {error && (
+              <div className="p-3 bg-bearish/20 border border-bearish/30 rounded-lg text-bearish text-sm">
+                {error}
+              </div>
+            )}
+            
+            <input
+              type="password"
+              placeholder="2FA Password"
+              value={formData.password}
+              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              className="w-full px-4 py-2.5 bg-terminal-bg border border-terminal-border rounded-lg focus:border-primary-600 focus:outline-none text-sm"
+            />
+            
+            <button
+              onClick={handleVerify2FA}
+              disabled={isLoading || !formData.password}
+              className="w-full py-2.5 bg-primary-600 hover:bg-primary-700 disabled:bg-terminal-border disabled:text-terminal-muted text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              Verify Password
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

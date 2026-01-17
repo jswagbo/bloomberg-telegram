@@ -324,6 +324,7 @@ IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. 
                     clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()  # Normalize spaces
                     
                     token.summary = clean_summary[:500]  # Limit length
+                    logger.info("summary_generated", symbol=token.symbol, length=len(token.summary))
                     
                     # Extract sentiment from the raw response
                     summary_lower = summary.lower()
@@ -335,6 +336,14 @@ IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. 
                         token.sentiment = 'mixed'
                     else:
                         token.sentiment = 'neutral'
+                else:
+                    # Empty response from Groq - use rule-based fallback
+                    logger.warning("groq_empty_response", symbol=token.symbol)
+                    token.summary = self._generate_rule_based_summary(token, discussion_texts)
+            else:
+                # Non-200 response - use rule-based fallback
+                logger.warning("groq_error_response", symbol=token.symbol, status=response.status_code, body=response.text[:200])
+                token.summary = self._generate_rule_based_summary(token, discussion_texts)
                         
         except Exception as e:
             logger.error("summary_failed", symbol=token.symbol, error=str(e), error_type=type(e).__name__)

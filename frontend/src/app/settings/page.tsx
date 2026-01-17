@@ -692,11 +692,16 @@ function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
         formData.apiHash,
         formData.phone
       );
+      console.log("Auth start result:", result);
       setSessionName(result.session_name);
-      if (result.status === "awaiting_code") {
+      // Backend returns "state" not "status"
+      if (result.state === "awaiting_code") {
         setStep("code");
+      } else {
+        setError(`Unexpected state: ${result.state}`);
       }
     } catch (err: any) {
+      console.error("Auth start error:", err);
       setError(err.response?.data?.detail || err.message || "Failed to start auth");
     } finally {
       setIsLoading(false);
@@ -708,12 +713,17 @@ function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
     setIsLoading(true);
     try {
       const result = await api.verifyTelegramCode(sessionName, formData.code);
-      if (result.status === "awaiting_2fa") {
+      console.log("Verify code result:", result);
+      // Backend returns "state" not "status"
+      if (result.state === "awaiting_2fa") {
         setStep("2fa");
-      } else if (result.status === "completed") {
+      } else if (result.state === "completed") {
         await handleComplete();
+      } else {
+        setError(`Unexpected state: ${result.state}`);
       }
     } catch (err: any) {
+      console.error("Verify code error:", err);
       setError(err.response?.data?.detail || err.message || "Invalid code");
     } finally {
       setIsLoading(false);
@@ -725,10 +735,15 @@ function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
     setIsLoading(true);
     try {
       const result = await api.verifyTelegram2FA(sessionName, formData.password);
-      if (result.status === "completed") {
+      console.log("Verify 2FA result:", result);
+      // Backend returns "state" not "status"
+      if (result.state === "completed") {
         await handleComplete();
+      } else {
+        setError(`Unexpected state: ${result.state}`);
       }
     } catch (err: any) {
+      console.error("Verify 2FA error:", err);
       setError(err.response?.data?.detail || err.message || "Invalid password");
     } finally {
       setIsLoading(false);

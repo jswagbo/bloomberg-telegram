@@ -237,12 +237,15 @@ function ChatFirstTokenCard({ token }: { token: ChatFirstToken }) {
 
         {/* Chat Summary - Always show if we have summary or chats */}
         {(token.chat_summary || token.summary || token.chats?.length > 0) && (
-          <div className="p-4">
+          <div className="p-4 border-t border-terminal-border/30">
             {(token.chat_summary || token.summary) ? (
-              <div className="bg-terminal-bg/50 rounded-lg p-3">
-                <p className="text-sm text-terminal-text leading-relaxed">
-                  {token.summary || token.chat_summary}
-                </p>
+              <div className="bg-gradient-to-r from-primary-600/10 to-transparent rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <span className="text-[10px] text-primary-400 font-medium shrink-0 mt-0.5">AI Summary</span>
+                  <p className="text-sm text-terminal-text leading-relaxed">
+                    {token.summary || token.chat_summary}
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="bg-terminal-bg/50 rounded-lg p-3">
@@ -254,15 +257,16 @@ function ChatFirstTokenCard({ token }: { token: ChatFirstToken }) {
             
             {/* Show which chats */}
             {token.chats && token.chats.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1">
-                {token.chats.slice(0, 3).map((chat, i) => (
-                  <span key={i} className="text-xs px-2 py-0.5 bg-terminal-border rounded text-terminal-muted">
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <span className="text-[10px] text-terminal-muted mr-1">Chats:</span>
+                {token.chats.slice(0, 4).map((chat, i) => (
+                  <span key={i} className="text-xs px-2 py-0.5 bg-terminal-border/50 rounded text-terminal-muted">
                     {chat}
                   </span>
                 ))}
-                {token.chats.length > 3 && (
+                {token.chats.length > 4 && (
                   <span className="text-xs px-2 py-0.5 text-terminal-muted">
-                    +{token.chats.length - 3} more
+                    +{token.chats.length - 4} more
                   </span>
                 )}
               </div>

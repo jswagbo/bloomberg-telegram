@@ -425,6 +425,7 @@ async def refresh_messages(
             "accounts": 0, 
             "sources": 0,
             "refreshed_at": _last_scan_time.isoformat(),
+            "errors": ["No Telegram accounts found. Please connect your Telegram in Settings."],
         }
     
     total_messages = 0
@@ -452,15 +453,20 @@ async def refresh_messages(
         # Connect to Telegram
         if account.session_name not in telegram_service._active_clients:
             logger.info("refresh_connecting", account=account.session_name)
-            connected = await telegram_service.connect_account(
-                session_name=account.session_name,
-                api_id_encrypted=account.api_id_encrypted,
-                api_hash_encrypted=account.api_hash_encrypted,
-                session_string_encrypted=account.session_string_encrypted,
-            )
-            if not connected:
-                errors.append(f"Failed to connect account {account.session_name}")
-                logger.error("refresh_connect_failed", account=account.session_name)
+            try:
+                connected = await telegram_service.connect_account(
+                    session_name=account.session_name,
+                    api_id_encrypted=account.api_id_encrypted,
+                    api_hash_encrypted=account.api_hash_encrypted,
+                    session_string_encrypted=account.session_string_encrypted,
+                )
+                if not connected:
+                    errors.append(f"Failed to connect account {account.session_name} - session may have expired. Please re-authenticate in Settings.")
+                    logger.error("refresh_connect_failed", account=account.session_name)
+                    continue
+            except Exception as e:
+                errors.append(f"Error connecting {account.session_name}: {str(e)}")
+                logger.error("refresh_connect_exception", account=account.session_name, error=str(e))
                 continue
         
         client = telegram_service._active_clients.get(account.session_name)

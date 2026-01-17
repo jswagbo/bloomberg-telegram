@@ -238,24 +238,36 @@ class ContextualScanner:
         discussions: List[Dict]
     ) -> TokenDiscussion:
         """Generate AI summary of the discussion context."""
-        if not discussions or not GROQ_API_KEY:
+        logger.info("generating_summary", symbol=token.symbol, discussions=len(discussions), groq_key_set=bool(GROQ_API_KEY))
+        
+        if not GROQ_API_KEY:
+            logger.warning("no_groq_key", symbol=token.symbol)
             token.summary = f"Mentioned {token.mention_count} times across {len(token.chats)} chats."
             return token
         
-        # Collect discussion texts, filtering for actual discussions
+        if not discussions:
+            token.summary = f"Mentioned {token.mention_count} times across {len(token.chats)} chats."
+            return token
+        
+        # Collect ALL message texts (less strict filtering)
         discussion_texts = []
+        raw_count = 0
         for disc in discussions:
             for msg in disc.get("messages", []):
                 text = msg.get("text", "")
-                if text and self._is_discussion_message(text):
+                raw_count += 1
+                if text and len(text) > 10:  # Just need some text
                     # Clean up the text
-                    clean = re.sub(r'https?://\S+', '[link]', text)
-                    clean = re.sub(r'[1-9A-HJ-NP-Za-km-z]{32,44}', '[address]', clean)
-                    if len(clean) > 20:
+                    clean = re.sub(r'https?://\S+', '', text)  # Remove URLs entirely
+                    clean = re.sub(r'[1-9A-HJ-NP-Za-km-z]{32,44}', '', clean)  # Remove addresses
+                    clean = clean.strip()
+                    if len(clean) > 10:  # Lowered threshold
                         discussion_texts.append(clean[:300])
         
+        logger.info("discussion_texts_collected", symbol=token.symbol, raw=raw_count, filtered=len(discussion_texts))
+        
         if not discussion_texts:
-            token.summary = f"Token shared {token.mention_count} times but no detailed discussion found."
+            token.summary = f"Scanned in {len(token.chats)} chats with {token.mention_count} mentions."
             return token
         
         # Prepare prompt - request concise plain text
@@ -275,6 +287,7 @@ Write a 2-3 sentence summary of what traders are saying. Include:
 IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. Just 2-3 natural sentences summarizing the discussion."""
 
         try:
+            logger.info("calling_groq", symbol=token.symbol, msg_count=len(sample))
             client = await self._get_client()
             response = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -290,6 +303,7 @@ IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. 
                 },
                 timeout=20.0,
             )
+            logger.info("groq_response", symbol=token.symbol, status=response.status_code)
             
             if response.status_code == 200:
                 result = response.json()
@@ -319,8 +333,9 @@ IMPORTANT: Write in plain text only. No markdown, no bullet points, no headers. 
                         token.sentiment = 'neutral'
                         
         except Exception as e:
-            logger.warning("summary_failed", symbol=token.symbol, error=str(e))
-            token.summary = f"Discussed in {len(token.chats)} chats with {len(discussion_texts)} messages."
+            logger.error("summary_failed", symbol=token.symbol, error=str(e), error_type=type(e).__name__)
+            # Provide a meaningful fallback with available info
+            token.summary = f"Active in {len(token.chats)} chats with {len(discussion_texts)} discussion messages. Check the chats for details."
         
         return token
     

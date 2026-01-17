@@ -770,23 +770,45 @@ export function TrendingFeed() {
   const refreshMutation = useMutation({
     mutationFn: () => api.refreshTrendingMessages(),
     onSuccess: (result) => {
+      console.log("Scan completed:", result);
       setLastScan(new Date());
       queryClient.invalidateQueries({ queryKey: ["discussions-feed"] });
+      
+      // Show result to user
+      if (result?.messages === 0) {
+        if (result?.errors?.length > 0) {
+          alert(`Scan issue: ${result.errors[0]}`);
+        } else if (result?.status === "no_accounts") {
+          alert("No Telegram account connected. Please connect your Telegram in Settings.");
+        }
+      }
+    },
+    onError: (error: any) => {
+      console.error("Scan failed:", error);
+      alert(`Scan failed: ${error?.message || "Unknown error. Check console for details."}`);
     },
   });
 
   // Scan Telegram messages - wrapped to prevent loops
   const handleScanTelegram = useCallback(async () => {
-    if (isScanning) return;  // Prevent concurrent scans
+    console.log("Scan button clicked, isScanning:", isScanning);
+    if (isScanning) {
+      console.log("Already scanning, ignoring click");
+      return;  // Prevent concurrent scans
+    }
     
     setIsScanning(true);
+    console.log("Starting Telegram scan...");
     try {
-      await refreshMutation.mutateAsync();
+      const result = await refreshMutation.mutateAsync();
+      console.log("Scan result:", result);
       await refetch();
     } catch (error) {
       console.error("Failed to scan Telegram:", error);
+      alert(`Scan error: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setIsScanning(false);
+      console.log("Scan finished");
     }
   }, [isScanning, refreshMutation, refetch]);
 

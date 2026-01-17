@@ -714,10 +714,11 @@ function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
     try {
       const result = await api.verifyTelegramCode(sessionName, formData.code);
       console.log("Verify code result:", result);
-      // Backend returns "state" not "status"
+      // Backend returns "state" - handle various success states
       if (result.state === "awaiting_2fa") {
         setStep("2fa");
-      } else if (result.state === "completed") {
+      } else if (result.state === "completed" || result.state === "authenticated") {
+        // Both "completed" and "authenticated" mean success
         await handleComplete();
       } else {
         setError(`Unexpected state: ${result.state}`);
@@ -751,16 +752,23 @@ function TelegramConnectFlow({ onSuccess }: { onSuccess: () => void }) {
   };
 
   const handleComplete = async () => {
+    setIsLoading(true);
     try {
-      await api.completeTelegramAuth(
+      console.log("Completing auth with session:", sessionName);
+      const result = await api.completeTelegramAuth(
         sessionName,
         parseInt(formData.apiId),
         formData.apiHash,
         formData.phone
       );
+      console.log("Complete auth result:", result);
+      alert("Telegram connected successfully! The page will reload.");
       onSuccess();
+      window.location.reload();
     } catch (err: any) {
+      console.error("Complete auth error:", err);
       setError(err.response?.data?.detail || err.message || "Failed to complete auth");
+      setIsLoading(false);
     }
   };
 
